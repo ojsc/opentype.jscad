@@ -1,7 +1,7 @@
-Wrapper opentypejs for openjscad
-early version
+# opentype.jscad
+Wrapper opentypejs for openjscad, early version.
 
-usage:
+# Example
 ```javascript
 include("https://raw.githubusercontent.com/ojsc/opentype.jscad/master/dist/opentype.min.jscad");
 include("https://raw.githubusercontent.com/ojsc/opentype.jscad/master/dist/fonts/purisa_ttf.jscad");
@@ -38,3 +38,16 @@ function drawGlyph(font, number,size,height) {
   return linear_extrude({ height:height}, cagFox).center();
 }
 ```
+
+# Warning
+Please check if you have the right to use the font in the way you want.
+
+# Working
+The way the cags are made from a font is as follows:
+- Asume all paths are closed
+- Make cags from paths
+- Sort cags in a tree. cag in cag in cag
+- Cut cags out of cags recursively
+
+# Not Working
+To bad some glyphs currently dont work.. Got some path itersections (maybe i'm doing the bezierCurves wrong). Some glyphs stall...(bug in tree?)
