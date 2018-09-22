@@ -1,3 +1,294 @@
+(function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f()}else if(typeof define==="function"&&define.amd){define([],f)}else{var g;if(typeof window!=="undefined"){g=window}else if(typeof global!=="undefined"){g=global}else if(typeof self!=="undefined"){g=self}else{g=this}g.OpenType = f()}})(function(){var define,module,exports;return (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
+const _CSGDEBUG = false
+
+/** Number of polygons per 360 degree revolution for 2D objects.
+ * @default
+ */
+const defaultResolution2D = 32 // FIXME this seems excessive
+/** Number of polygons per 360 degree revolution for 3D objects.
+ * @default
+ */
+const defaultResolution3D = 12
+
+/** Epsilon used during determination of near zero distances.
+ * @default
+ */
+const EPS = 1e-5
+
+/** Epsilon used during determination of near zero areas.
+ * @default
+ */
+const angleEPS = 0.10
+
+/** Epsilon used during determination of near zero areas.
+ *  This is the minimal area of a minimal polygon.
+ * @default
+ */
+const areaEPS = 0.50 * EPS * EPS * Math.sin(angleEPS)
+
+const all = 0
+const top = 1
+const bottom = 2
+const left = 3
+const right = 4
+const front = 5
+const back = 6
+// Tag factory: we can request a unique tag through CSG.getTag()
+let staticTag = 1
+const getTag = () => staticTag++
+
+module.exports = {
+  _CSGDEBUG,
+  defaultResolution2D,
+  defaultResolution3D,
+  EPS,
+  angleEPS,
+  areaEPS,
+  all,
+  top,
+  bottom,
+  left,
+  right,
+  front,
+  back,
+  staticTag,
+  getTag
+}
+
+},{}],2:[function(require,module,exports){
+const {EPS} = require('../constants')
+const {solve2Linear} = require('../utils')
+
+// see if the line between p0start and p0end intersects with the line between p1start and p1end
+// returns true if the lines strictly intersect, the end points are not counted!
+const linesIntersect = function (p0start, p0end, p1start, p1end) {
+  if (p0end.equals(p1start) || p1end.equals(p0start)) {
+    let d = p1end.minus(p1start).unit().plus(p0end.minus(p0start).unit()).length()
+    if (d < EPS) {
+      return true
+    }
+  } else {
+    let d0 = p0end.minus(p0start)
+    let d1 = p1end.minus(p1start)
+    // FIXME These epsilons need review and testing
+    if (Math.abs(d0.cross(d1)) < 1e-9) return false // lines are parallel
+    let alphas = solve2Linear(-d0.x, d1.x, -d0.y, d1.y, p0start.x - p1start.x, p0start.y - p1start.y)
+    if ((alphas[0] > 1e-6) && (alphas[0] < 0.999999) && (alphas[1] > 1e-5) && (alphas[1] < 0.999999)) return true
+    // if( (alphas[0] >= 0) && (alphas[0] <= 1) && (alphas[1] >= 0) && (alphas[1] <= 1) ) return true;
+  }
+  return false
+}
+
+module.exports = {linesIntersect}
+
+},{"../constants":1,"../utils":3}],3:[function(require,module,exports){
+function fnNumberSort (a, b) {
+  return a - b
+}
+
+function fnSortByIndex (a, b) {
+  return a.index - b.index
+}
+
+const IsFloat = function (n) {
+  return (!isNaN(n)) || (n === Infinity) || (n === -Infinity)
+}
+
+const solve2Linear = function (a, b, c, d, u, v) {
+  let det = a * d - b * c
+  let invdet = 1.0 / det
+  let x = u * d - b * v
+  let y = -u * c + a * v
+  x *= invdet
+  y *= invdet
+  return [x, y]
+}
+
+function insertSorted (array, element, comparefunc) {
+  let leftbound = 0
+  let rightbound = array.length
+  while (rightbound > leftbound) {
+    let testindex = Math.floor((leftbound + rightbound) / 2)
+    let testelement = array[testindex]
+    let compareresult = comparefunc(element, testelement)
+    if (compareresult > 0) // element > testelement
+    {
+      leftbound = testindex + 1
+    } else {
+      rightbound = testindex
+    }
+  }
+  array.splice(leftbound, 0, element)
+}
+
+// Get the x coordinate of a point with a certain y coordinate, interpolated between two
+// points (CSG.Vector2D).
+// Interpolation is robust even if the points have the same y coordinate
+const interpolateBetween2DPointsForY = function (point1, point2, y) {
+  let f1 = y - point1.y
+  let f2 = point2.y - point1.y
+  if (f2 < 0) {
+    f1 = -f1
+    f2 = -f2
+  }
+  let t
+  if (f1 <= 0) {
+    t = 0.0
+  } else if (f1 >= f2) {
+    t = 1.0
+  } else if (f2 < 1e-10) { // FIXME Should this be CSG.EPS?
+    t = 0.5
+  } else {
+    t = f1 / f2
+  }
+  let result = point1.x + t * (point2.x - point1.x)
+  return result
+}
+
+function isCAG (object) {
+  // objects[i] instanceof CAG => NOT RELIABLE
+  // 'instanceof' causes huge issues when using objects from
+  // two different versions of CSG.js as they are not reckonized as one and the same
+  // so DO NOT use instanceof to detect matching types for CSG/CAG
+  if (!('sides' in object)) {
+    return false
+  }
+  if (!('length' in object.sides)) {
+    return false
+  }
+
+  return true
+}
+
+function isCSG (object) {
+  // objects[i] instanceof CSG => NOT RELIABLE
+  // 'instanceof' causes huge issues when using objects from
+  // two different versions of CSG.js as they are not reckonized as one and the same
+  // so DO NOT use instanceof to detect matching types for CSG/CAG
+  if (!('polygons' in object)) {
+    return false
+  }
+  if (!('length' in object.polygons)) {
+    return false
+  }
+  return true
+}
+
+module.exports = {
+  fnNumberSort,
+  fnSortByIndex,
+  IsFloat,
+  solve2Linear,
+  insertSorted,
+  interpolateBetween2DPointsForY,
+  isCAG,
+  isCSG
+}
+
+},{}],4:[function(require,module,exports){
+const {areaEPS} = require('../constants')
+const {linesIntersect} = require('../math/lineUtils')
+
+// check if we are a valid CAG (for debugging)
+// NOTE(bebbi) uneven side count doesn't work because rounding with EPS isn't taken into account
+const isCAGValid = function (CAG) {
+  let errors = []
+  if (CAG.isSelfIntersecting(true)) {
+    errors.push('Self intersects')
+  }
+  let pointcount = {}
+  CAG.sides.map(function (side) {
+    function mappoint (p) {
+      let tag = p.x + ' ' + p.y
+      if (!(tag in pointcount)) pointcount[tag] = 0
+      pointcount[tag] ++
+    }
+    mappoint(side.vertex0.pos)
+    mappoint(side.vertex1.pos)
+  })
+  for (let tag in pointcount) {
+    let count = pointcount[tag]
+    if (count & 1) {
+      errors.push('Uneven number of sides (' + count + ') for point ' + tag)
+    }
+  }
+  let area = CAG.area()
+  if (area < areaEPS) {
+    errors.push('Area is ' + area)
+  }
+  if (errors.length > 0) {
+    let ertxt = ''
+    errors.map(function (err) {
+      ertxt += err + '\n'
+    })
+    throw new Error(ertxt)
+  }
+}
+
+const isSelfIntersecting = function (cag, debug) {
+  let numsides = cag.sides.length
+  for (let i = 0; i < numsides; i++) {
+    let side0 = cag.sides[i]
+    for (let ii = i + 1; ii < numsides; ii++) {
+      let side1 = cag.sides[ii]
+      if (linesIntersect(side0.vertex0.pos, side0.vertex1.pos, side1.vertex0.pos, side1.vertex1.pos)) {
+        if (debug) { console.log('side ' + i + ': ' + side0); console.log('side ' + ii + ': ' + side1) }
+        return true
+      }
+    }
+  }
+  return false
+}
+
+/** Check if the point stay inside the CAG shape
+* ray-casting algorithm based on :
+* https://github.com/substack/point-in-polygon/blob/master/index.js
+* http://www.ecse.rp1.edu/Homepages/wrf/Research/Short_Notes/pnpoly.html
+* originaly writed for https://github.com/lautr3k/SLAcer.js/blob/dev/js/slacer/slicer.js#L82
+* @param {CAG} cag - CAG object
+* @param {Object} p0 - Vertex2 like object
+* @returns {Boolean}
+*/
+const hasPointInside = function (cag, p0) {
+  let p1 = null
+  let p2 = null
+  let inside = false
+  cag.sides.forEach(side => {
+    p1 = side.vertex0.pos
+    p2 = side.vertex1.pos
+    if (hasPointInside.c1(p0, p1, p2) && hasPointInside.c2(p0, p1, p2)) {
+      inside = !inside
+    }
+  })
+  return inside
+}
+
+hasPointInside.c1 = (p0, p1, p2) => (p1.y > p0.y) !== (p2.y > p0.y)
+hasPointInside.c2 = (p0, p1, p2) => (p0.x < (p2.x - p1.x) * (p0.y - p1.y) / (p2.y - p1.y) + p1.x)
+
+/** Check if all points from one CAG stay inside another CAG
+* @param {CAG} cag1 - CAG object
+* @param {Object} cag2 - CAG object
+* @returns {Boolean}
+*/
+const contains = function (cag1, cag2) {
+  for (let i = 0, il = cag2.sides.length; i < il; i++) {
+    if (!hasPointInside(cag1, cag2.sides[i].vertex0.pos)) {
+      return false
+    }
+  }
+  return true
+}
+
+module.exports = {
+  isCAGValid,
+  isSelfIntersecting,
+  hasPointInside,
+  contains
+}
+
+},{"../constants":1,"../math/lineUtils":2}],5:[function(require,module,exports){
+(function (Buffer){
 /**
  * https://opentype.js.org v0.9.0 | (c) Frederik De Bleser and other contributors | MIT License | Uses tiny-inflate by Devon Govett and string.prototype.codepointat polyfill by Mathias Bynens
  */
@@ -12474,4 +12765,3317 @@
 	Object.defineProperty(exports, '__esModule', { value: true });
 
 })));
-//# sourceMappingURL=opentype.js.map
+
+
+}).call(this,require("buffer").Buffer)
+},{"buffer":13,"fs":12}],6:[function(require,module,exports){
+'use strict';
+
+/**
+ * @module symbol-tree
+ * @author Joris van der Wel <joris@jorisvanderwel.com>
+ */
+
+const SymbolTreeNode = require('./SymbolTreeNode');
+const TreePosition = require('./TreePosition');
+const TreeIterator = require('./TreeIterator');
+
+function returnTrue() {
+        return true;
+}
+
+function reverseArrayIndex(array, reverseIndex) {
+        return array[array.length - 1 - reverseIndex]; // no need to check `index >= 0`
+}
+
+class SymbolTree {
+
+        /**
+         * @constructor
+         * @alias module:symbol-tree
+         * @param {string} [description='SymbolTree data'] Description used for the Symbol
+         */
+        constructor(description) {
+                this.symbol = Symbol(description || 'SymbolTree data');
+        }
+
+        /**
+         * You can use this function to (optionally) initialize an object right after its creation,
+         * to take advantage of V8's fast properties. Also useful if you would like to
+         * freeze your object.
+         *
+         * `O(1)`
+         *
+         * @method
+         * @alias module:symbol-tree#initialize
+         * @param {Object} object
+         * @return {Object} object
+         */
+        initialize(object) {
+                this._node(object);
+
+                return object;
+        }
+
+        _node(object) {
+                if (!object) {
+                        return null;
+                }
+
+                const node = object[this.symbol];
+
+                if (node) {
+                        return node;
+                }
+
+                return (object[this.symbol] = new SymbolTreeNode());
+        }
+
+        /**
+         * Returns `true` if the object has any children. Otherwise it returns `false`.
+         *
+         * * `O(1)`
+         *
+         * @method hasChildren
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @return {Boolean}
+         */
+        hasChildren(object) {
+                return this._node(object).hasChildren;
+        }
+
+        /**
+         * Returns the first child of the given object.
+         *
+         * * `O(1)`
+         *
+         * @method firstChild
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @return {Object}
+         */
+        firstChild(object) {
+                return this._node(object).firstChild;
+        }
+
+        /**
+         * Returns the last child of the given object.
+         *
+         * * `O(1)`
+         *
+         * @method lastChild
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @return {Object}
+         */
+        lastChild(object) {
+                return this._node(object).lastChild;
+        }
+
+        /**
+         * Returns the previous sibling of the given object.
+         *
+         * * `O(1)`
+         *
+         * @method previousSibling
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @return {Object}
+         */
+        previousSibling(object) {
+                return this._node(object).previousSibling;
+        }
+
+        /**
+         * Returns the next sibling of the given object.
+         *
+         * * `O(1)`
+         *
+         * @method nextSibling
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @return {Object}
+         */
+        nextSibling(object) {
+                return this._node(object).nextSibling;
+        }
+
+        /**
+         * Return the parent of the given object.
+         *
+         * * `O(1)`
+         *
+         * @method parent
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @return {Object}
+         */
+        parent(object) {
+                return this._node(object).parent;
+        }
+
+        /**
+         * Find the inclusive descendant that is last in tree order of the given object.
+         *
+         * * `O(n)` (worst case) where `n` is the depth of the subtree of `object`
+         *
+         * @method lastInclusiveDescendant
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @return {Object}
+         */
+        lastInclusiveDescendant(object) {
+                let lastChild;
+                let current = object;
+
+                while ((lastChild = this._node(current).lastChild)) {
+                        current = lastChild;
+                }
+
+                return current;
+        }
+
+        /**
+         * Find the preceding object (A) of the given object (B).
+         * An object A is preceding an object B if A and B are in the same tree
+         * and A comes before B in tree order.
+         *
+         * * `O(n)` (worst case)
+         * * `O(1)` (amortized when walking the entire tree)
+         *
+         * @method preceding
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @param {Object} [options]
+         * @param {Object} [options.root] If set, `root` must be an inclusive ancestor
+         *        of the return value (or else null is returned). This check _assumes_
+         *        that `root` is also an inclusive ancestor of the given `object`
+         * @return {?Object}
+         */
+        preceding(object, options) {
+                const treeRoot = options && options.root;
+
+                if (object === treeRoot) {
+                        return null;
+                }
+
+                const previousSibling = this._node(object).previousSibling;
+
+                if (previousSibling) {
+                        return this.lastInclusiveDescendant(previousSibling);
+                }
+
+                // if there is no previous sibling return the parent (might be null)
+                return this._node(object).parent;
+        }
+
+        /**
+         * Find the following object (A) of the given object (B).
+         * An object A is following an object B if A and B are in the same tree
+         * and A comes after B in tree order.
+         *
+         * * `O(n)` (worst case) where `n` is the amount of objects in the entire tree
+         * * `O(1)` (amortized when walking the entire tree)
+         *
+         * @method following
+         * @memberOf module:symbol-tree#
+         * @param {!Object} object
+         * @param {Object} [options]
+         * @param {Object} [options.root] If set, `root` must be an inclusive ancestor
+         *        of the return value (or else null is returned). This check _assumes_
+         *        that `root` is also an inclusive ancestor of the given `object`
+         * @param {Boolean} [options.skipChildren=false] If set, ignore the children of `object`
+         * @return {?Object}
+         */
+        following(object, options) {
+                const treeRoot = options && options.root;
+                const skipChildren = options && options.skipChildren;
+
+                const firstChild = !skipChildren && this._node(object).firstChild;
+
+                if (firstChild) {
+                        return firstChild;
+                }
+
+                let current = object;
+
+                do {
+                        if (current === treeRoot) {
+                                return null;
+                        }
+
+                        const nextSibling = this._node(current).nextSibling;
+
+                        if (nextSibling) {
+                                return nextSibling;
+                        }
+
+                        current = this._node(current).parent;
+                } while (current);
+
+                return null;
+        }
+
+        /**
+         * Append all children of the given object to an array.
+         *
+         * * `O(n)` where `n` is the amount of children of the given `parent`
+         *
+         * @method childrenToArray
+         * @memberOf module:symbol-tree#
+         * @param {Object} parent
+         * @param {Object} [options]
+         * @param {Object[]} [options.array=[]]
+         * @param {Function} [options.filter] Function to test each object before it is added to the array.
+         *                            Invoked with arguments (object). Should return `true` if an object
+         *                            is to be included.
+         * @param {*} [options.thisArg] Value to use as `this` when executing `filter`.
+         * @return {Object[]}
+         */
+        childrenToArray(parent, options) {
+                const array   = (options && options.array) || [];
+                const filter  = (options && options.filter) || returnTrue;
+                const thisArg = (options && options.thisArg) || undefined;
+
+                const parentNode = this._node(parent);
+                let object = parentNode.firstChild;
+                let index = 0;
+
+                while (object) {
+                        const node = this._node(object);
+                        node.setCachedIndex(parentNode, index);
+
+                        if (filter.call(thisArg, object)) {
+                                array.push(object);
+                        }
+
+                        object = node.nextSibling;
+                        ++index;
+                }
+
+                return array;
+        }
+
+        /**
+         * Append all inclusive ancestors of the given object to an array.
+         *
+         * * `O(n)` where `n` is the amount of ancestors of the given `object`
+         *
+         * @method ancestorsToArray
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @param {Object} [options]
+         * @param {Object[]} [options.array=[]]
+         * @param {Function} [options.filter] Function to test each object before it is added to the array.
+         *                            Invoked with arguments (object). Should return `true` if an object
+         *                            is to be included.
+         * @param {*} [options.thisArg] Value to use as `this` when executing `filter`.
+         * @return {Object[]}
+         */
+        ancestorsToArray(object, options) {
+                const array   = (options && options.array) || [];
+                const filter  = (options && options.filter) || returnTrue;
+                const thisArg = (options && options.thisArg) || undefined;
+
+                let ancestor = object;
+
+                while (ancestor) {
+                        if (filter.call(thisArg, ancestor)) {
+                                array.push(ancestor);
+                        }
+                        ancestor = this._node(ancestor).parent;
+                }
+
+                return array;
+        }
+
+        /**
+         * Append all descendants of the given object to an array (in tree order).
+         *
+         * * `O(n)` where `n` is the amount of objects in the sub-tree of the given `object`
+         *
+         * @method treeToArray
+         * @memberOf module:symbol-tree#
+         * @param {Object} root
+         * @param {Object} [options]
+         * @param {Object[]} [options.array=[]]
+         * @param {Function} [options.filter] Function to test each object before it is added to the array.
+         *                            Invoked with arguments (object). Should return `true` if an object
+         *                            is to be included.
+         * @param {*} [options.thisArg] Value to use as `this` when executing `filter`.
+         * @return {Object[]}
+         */
+        treeToArray(root, options) {
+                const array   = (options && options.array) || [];
+                const filter  = (options && options.filter) || returnTrue;
+                const thisArg = (options && options.thisArg) || undefined;
+
+                let object = root;
+
+                while (object) {
+                        if (filter.call(thisArg, object)) {
+                                array.push(object);
+                        }
+                        object = this.following(object, {root: root});
+                }
+
+                return array;
+        }
+
+        /**
+         * Iterate over all children of the given object
+         *
+         * * `O(1)` for a single iteration
+         *
+         * @method childrenIterator
+         * @memberOf module:symbol-tree#
+         * @param {Object} parent
+         * @param {Object} [options]
+         * @param {Boolean} [options.reverse=false]
+         * @return {Object} An iterable iterator (ES6)
+         */
+        childrenIterator(parent, options) {
+                const reverse = options && options.reverse;
+                const parentNode = this._node(parent);
+
+                return new TreeIterator(
+                        this,
+                        parent,
+                        reverse ? parentNode.lastChild : parentNode.firstChild,
+                        reverse ? TreeIterator.PREV : TreeIterator.NEXT
+                );
+        }
+
+        /**
+         * Iterate over all the previous siblings of the given object. (in reverse tree order)
+         *
+         * * `O(1)` for a single iteration
+         *
+         * @method previousSiblingsIterator
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @return {Object} An iterable iterator (ES6)
+         */
+        previousSiblingsIterator(object) {
+                return new TreeIterator(
+                        this,
+                        object,
+                        this._node(object).previousSibling,
+                        TreeIterator.PREV
+                );
+        }
+
+        /**
+         * Iterate over all the next siblings of the given object. (in tree order)
+         *
+         * * `O(1)` for a single iteration
+         *
+         * @method nextSiblingsIterator
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @return {Object} An iterable iterator (ES6)
+         */
+        nextSiblingsIterator(object) {
+                return new TreeIterator(
+                        this,
+                        object,
+                        this._node(object).nextSibling,
+                        TreeIterator.NEXT
+                );
+        }
+
+        /**
+         * Iterate over all inclusive ancestors of the given object
+         *
+         * * `O(1)` for a single iteration
+         *
+         * @method ancestorsIterator
+         * @memberOf module:symbol-tree#
+         * @param {Object} object
+         * @return {Object} An iterable iterator (ES6)
+         */
+        ancestorsIterator(object) {
+                return new TreeIterator(
+                        this,
+                        object,
+                        object,
+                        TreeIterator.PARENT
+                );
+        }
+
+        /**
+         * Iterate over all descendants of the given object (in tree order).
+         *
+         * Where `n` is the amount of objects in the sub-tree of the given `root`:
+         *
+         * * `O(n)` (worst case for a single iteration)
+         * * `O(n)` (amortized, when completing the iterator)
+         *
+         * @method treeIterator
+         * @memberOf module:symbol-tree#
+         * @param {Object} root
+         * @param {Object} options
+         * @param {Boolean} [options.reverse=false]
+         * @return {Object} An iterable iterator (ES6)
+         */
+        treeIterator(root, options) {
+                const reverse = options && options.reverse;
+
+                return new TreeIterator(
+                        this,
+                        root,
+                        reverse ? this.lastInclusiveDescendant(root) : root,
+                        reverse ? TreeIterator.PRECEDING : TreeIterator.FOLLOWING
+                );
+        }
+
+        /**
+         * Find the index of the given object (the number of preceding siblings).
+         *
+         * * `O(n)` where `n` is the amount of preceding siblings
+         * * `O(1)` (amortized, if the tree is not modified)
+         *
+         * @method index
+         * @memberOf module:symbol-tree#
+         * @param {Object} child
+         * @return {Number} The number of preceding siblings, or -1 if the object has no parent
+         */
+        index(child) {
+                const childNode = this._node(child);
+                const parentNode = this._node(childNode.parent);
+
+                if (!parentNode) {
+                        // In principal, you could also find out the number of preceding siblings
+                        // for objects that do not have a parent. This method limits itself only to
+                        // objects that have a parent because that lets us optimize more.
+                        return -1;
+                }
+
+                let currentIndex = childNode.getCachedIndex(parentNode);
+
+                if (currentIndex >= 0) {
+                        return currentIndex;
+                }
+
+                currentIndex = 0;
+                let object = parentNode.firstChild;
+
+                if (parentNode.childIndexCachedUpTo) {
+                        const cachedUpToNode = this._node(parentNode.childIndexCachedUpTo);
+                        object = cachedUpToNode.nextSibling;
+                        currentIndex = cachedUpToNode.getCachedIndex(parentNode) + 1;
+                }
+
+                while (object) {
+                        const node = this._node(object);
+                        node.setCachedIndex(parentNode, currentIndex);
+
+                        if (object === child) {
+                                break;
+                        }
+
+                        ++currentIndex;
+                        object = node.nextSibling;
+                }
+
+                parentNode.childIndexCachedUpTo = child;
+
+                return currentIndex;
+        }
+
+        /**
+         * Calculate the number of children.
+         *
+         * * `O(n)` where `n` is the amount of children
+         * * `O(1)` (amortized, if the tree is not modified)
+         *
+         * @method childrenCount
+         * @memberOf module:symbol-tree#
+         * @param {Object} parent
+         * @return {Number}
+         */
+        childrenCount(parent) {
+                const parentNode = this._node(parent);
+
+                if (!parentNode.lastChild) {
+                        return 0;
+                }
+
+                return this.index(parentNode.lastChild) + 1;
+        }
+
+        /**
+         * Compare the position of an object relative to another object. A bit set is returned:
+         *
+         * <ul>
+         *     <li>DISCONNECTED : 1</li>
+         *     <li>PRECEDING : 2</li>
+         *     <li>FOLLOWING : 4</li>
+         *     <li>CONTAINS : 8</li>
+         *     <li>CONTAINED_BY : 16</li>
+         * </ul>
+         *
+         * The semantics are the same as compareDocumentPosition in DOM, with the exception that
+         * DISCONNECTED never occurs with any other bit.
+         *
+         * where `n` and `m` are the amount of ancestors of `left` and `right`;
+         * where `o` is the amount of children of the lowest common ancestor of `left` and `right`:
+         *
+         * * `O(n + m + o)` (worst case)
+         * * `O(n + m)` (amortized, if the tree is not modified)
+         *
+         * @method compareTreePosition
+         * @memberOf module:symbol-tree#
+         * @param {Object} left
+         * @param {Object} right
+         * @return {Number}
+         */
+        compareTreePosition(left, right) {
+                // In DOM terms:
+                // left = reference / context object
+                // right = other
+
+                if (left === right) {
+                        return 0;
+                }
+
+                /* jshint -W016 */
+
+                const leftAncestors = []; { // inclusive
+                        let leftAncestor = left;
+
+                        while (leftAncestor) {
+                                if (leftAncestor === right) {
+                                        return TreePosition.CONTAINS | TreePosition.PRECEDING;
+                                        // other is ancestor of reference
+                                }
+
+                                leftAncestors.push(leftAncestor);
+                                leftAncestor = this.parent(leftAncestor);
+                        }
+                }
+
+
+                const rightAncestors = []; {
+                        let rightAncestor = right;
+
+                        while (rightAncestor) {
+                                if (rightAncestor === left) {
+                                        return TreePosition.CONTAINED_BY | TreePosition.FOLLOWING;
+                                }
+
+                                rightAncestors.push(rightAncestor);
+                                rightAncestor = this.parent(rightAncestor);
+                        }
+                }
+
+
+                const root = reverseArrayIndex(leftAncestors, 0);
+
+                if (!root || root !== reverseArrayIndex(rightAncestors, 0)) {
+                        // note: unlike DOM, preceding / following is not set here
+                        return TreePosition.DISCONNECTED;
+                }
+
+                // find the lowest common ancestor
+                let commonAncestorIndex = 0;
+                const ancestorsMinLength = Math.min(leftAncestors.length, rightAncestors.length);
+
+                for (let i = 0; i < ancestorsMinLength; ++i) {
+                        const leftAncestor  = reverseArrayIndex(leftAncestors, i);
+                        const rightAncestor = reverseArrayIndex(rightAncestors, i);
+
+                        if (leftAncestor !== rightAncestor) {
+                                break;
+                        }
+
+                        commonAncestorIndex = i;
+                }
+
+                // indexes within the common ancestor
+                const leftIndex  = this.index(reverseArrayIndex(leftAncestors, commonAncestorIndex + 1));
+                const rightIndex = this.index(reverseArrayIndex(rightAncestors, commonAncestorIndex + 1));
+
+                return rightIndex < leftIndex
+                        ? TreePosition.PRECEDING
+                        : TreePosition.FOLLOWING;
+        }
+
+        /**
+         * Remove the object from this tree.
+         * Has no effect if already removed.
+         *
+         * * `O(1)`
+         *
+         * @method remove
+         * @memberOf module:symbol-tree#
+         * @param {Object} removeObject
+         * @return {Object} removeObject
+         */
+        remove(removeObject) {
+                const removeNode = this._node(removeObject);
+                const parentNode = this._node(removeNode.parent);
+                const prevNode = this._node(removeNode.previousSibling);
+                const nextNode = this._node(removeNode.nextSibling);
+
+                if (parentNode) {
+                        if (parentNode.firstChild === removeObject) {
+                                parentNode.firstChild = removeNode.nextSibling;
+                        }
+
+                        if (parentNode.lastChild === removeObject) {
+                                parentNode.lastChild = removeNode.previousSibling;
+                        }
+                }
+
+                if (prevNode) {
+                        prevNode.nextSibling = removeNode.nextSibling;
+                }
+
+                if (nextNode) {
+                        nextNode.previousSibling = removeNode.previousSibling;
+                }
+
+                removeNode.parent = null;
+                removeNode.previousSibling = null;
+                removeNode.nextSibling = null;
+
+                if (parentNode) {
+                        parentNode.childrenChanged();
+                }
+
+                return removeObject;
+        }
+
+        /**
+         * Insert the given object before the reference object.
+         * `newObject` is now the previous sibling of `referenceObject`.
+         *
+         * * `O(1)`
+         *
+         * @method insertBefore
+         * @memberOf module:symbol-tree#
+         * @param {Object} referenceObject
+         * @param {Object} newObject
+         * @throws {Error} If the newObject is already present in this SymbolTree
+         * @return {Object} newObject
+         */
+        insertBefore(referenceObject, newObject) {
+                const referenceNode = this._node(referenceObject);
+                const prevNode = this._node(referenceNode.previousSibling);
+                const newNode = this._node(newObject);
+                const parentNode = this._node(referenceNode.parent);
+
+                if (newNode.isAttached) {
+                        throw Error('Given object is already present in this SymbolTree, remove it first');
+                }
+
+                newNode.parent = referenceNode.parent;
+                newNode.previousSibling = referenceNode.previousSibling;
+                newNode.nextSibling = referenceObject;
+                referenceNode.previousSibling = newObject;
+
+                if (prevNode) {
+                        prevNode.nextSibling = newObject;
+                }
+
+                if (parentNode && parentNode.firstChild === referenceObject) {
+                        parentNode.firstChild = newObject;
+                }
+
+                if (parentNode) {
+                        parentNode.childrenChanged();
+                }
+
+                return newObject;
+        }
+
+        /**
+         * Insert the given object after the reference object.
+         * `newObject` is now the next sibling of `referenceObject`.
+         *
+         * * `O(1)`
+         *
+         * @method insertAfter
+         * @memberOf module:symbol-tree#
+         * @param {Object} referenceObject
+         * @param {Object} newObject
+         * @throws {Error} If the newObject is already present in this SymbolTree
+         * @return {Object} newObject
+         */
+        insertAfter(referenceObject, newObject) {
+                const referenceNode = this._node(referenceObject);
+                const nextNode = this._node(referenceNode.nextSibling);
+                const newNode = this._node(newObject);
+                const parentNode = this._node(referenceNode.parent);
+
+                if (newNode.isAttached) {
+                        throw Error('Given object is already present in this SymbolTree, remove it first');
+                }
+
+                newNode.parent = referenceNode.parent;
+                newNode.previousSibling = referenceObject;
+                newNode.nextSibling = referenceNode.nextSibling;
+                referenceNode.nextSibling = newObject;
+
+                if (nextNode) {
+                        nextNode.previousSibling = newObject;
+                }
+
+                if (parentNode && parentNode.lastChild === referenceObject) {
+                        parentNode.lastChild = newObject;
+                }
+
+                if (parentNode) {
+                        parentNode.childrenChanged();
+                }
+
+                return newObject;
+        }
+
+        /**
+         * Insert the given object as the first child of the given reference object.
+         * `newObject` is now the first child of `referenceObject`.
+         *
+         * * `O(1)`
+         *
+         * @method prependChild
+         * @memberOf module:symbol-tree#
+         * @param {Object} referenceObject
+         * @param {Object} newObject
+         * @throws {Error} If the newObject is already present in this SymbolTree
+         * @return {Object} newObject
+         */
+        prependChild(referenceObject, newObject) {
+                const referenceNode = this._node(referenceObject);
+                const newNode = this._node(newObject);
+
+                if (newNode.isAttached) {
+                        throw Error('Given object is already present in this SymbolTree, remove it first');
+                }
+
+                if (referenceNode.hasChildren) {
+                        this.insertBefore(referenceNode.firstChild, newObject);
+                }
+                else {
+                        newNode.parent = referenceObject;
+                        referenceNode.firstChild = newObject;
+                        referenceNode.lastChild = newObject;
+                        referenceNode.childrenChanged();
+                }
+
+                return newObject;
+        }
+
+        /**
+         * Insert the given object as the last child of the given reference object.
+         * `newObject` is now the last child of `referenceObject`.
+         *
+         * * `O(1)`
+         *
+         * @method appendChild
+         * @memberOf module:symbol-tree#
+         * @param {Object} referenceObject
+         * @param {Object} newObject
+         * @throws {Error} If the newObject is already present in this SymbolTree
+         * @return {Object} newObject
+         */
+        appendChild(referenceObject, newObject) {
+                const referenceNode = this._node(referenceObject);
+                const newNode = this._node(newObject);
+
+                if (newNode.isAttached) {
+                        throw Error('Given object is already present in this SymbolTree, remove it first');
+                }
+
+                if (referenceNode.hasChildren) {
+                        this.insertAfter(referenceNode.lastChild, newObject);
+                }
+                else {
+                        newNode.parent = referenceObject;
+                        referenceNode.firstChild = newObject;
+                        referenceNode.lastChild = newObject;
+                        referenceNode.childrenChanged();
+                }
+
+                return newObject;
+        }
+}
+
+module.exports = SymbolTree;
+SymbolTree.TreePosition = TreePosition;
+
+},{"./SymbolTreeNode":7,"./TreeIterator":8,"./TreePosition":9}],7:[function(require,module,exports){
+'use strict';
+
+module.exports = class SymbolTreeNode {
+        constructor() {
+                this.parent = null;
+                this.previousSibling = null;
+                this.nextSibling = null;
+
+                this.firstChild = null;
+                this.lastChild = null;
+
+                /** This value is incremented anytime a children is added or removed */
+                this.childrenVersion = 0;
+                /** The last child object which has a cached index */
+                this.childIndexCachedUpTo = null;
+
+                /** This value represents the cached node index, as long as
+                 * cachedIndexVersion matches with the childrenVersion of the parent */
+                this.cachedIndex = -1;
+                this.cachedIndexVersion = NaN; // NaN is never equal to anything
+        }
+
+        get isAttached() {
+                return Boolean(this.parent || this.previousSibling || this.nextSibling);
+        }
+
+        get hasChildren() {
+                return Boolean(this.firstChild);
+        }
+
+        childrenChanged() {
+                /* jshint -W016 */
+                // integer wrap around
+                this.childrenVersion = (this.childrenVersion + 1) & 0xFFFFFFFF;
+                this.childIndexCachedUpTo = null;
+        }
+
+        getCachedIndex(parentNode) {
+                // (assumes parentNode is actually the parent)
+                if (this.cachedIndexVersion !== parentNode.childrenVersion) {
+                        this.cachedIndexVersion = NaN;
+                        // cachedIndex is no longer valid
+                        return -1;
+                }
+
+                return this.cachedIndex; // -1 if not cached
+        }
+
+        setCachedIndex(parentNode, index) {
+                // (assumes parentNode is actually the parent)
+                this.cachedIndexVersion = parentNode.childrenVersion;
+                this.cachedIndex = index;
+        }
+};
+
+},{}],8:[function(require,module,exports){
+'use strict';
+
+const TREE = Symbol();
+const ROOT = Symbol();
+const NEXT = Symbol();
+const ITERATE_FUNC = Symbol();
+
+class TreeIterator {
+        constructor(tree, root, firstResult, iterateFunction) {
+                this[TREE] = tree;
+                this[ROOT] = root;
+                this[NEXT] = firstResult;
+                this[ITERATE_FUNC] = iterateFunction;
+        }
+
+        next() {
+                const tree = this[TREE];
+                const iterateFunc = this[ITERATE_FUNC];
+                const root = this[ROOT];
+
+                if (!this[NEXT]) {
+                        return {
+                                done: true,
+                                value: root,
+                        };
+                }
+
+                const value = this[NEXT];
+
+                if (iterateFunc === 1) {
+                        this[NEXT] = tree._node(value).previousSibling;
+                }
+                else if (iterateFunc === 2) {
+                        this[NEXT] = tree._node(value).nextSibling;
+                }
+                else if (iterateFunc === 3) {
+                        this[NEXT] = tree._node(value).parent;
+                }
+                else if (iterateFunc === 4) {
+                        this[NEXT] = tree.preceding(value, {root: root});
+                }
+                else /* if (iterateFunc === 5)*/ {
+                        this[NEXT] = tree.following(value, {root: root});
+                }
+
+                return {
+                        done: false,
+                        value: value,
+                };
+        }
+}
+
+Object.defineProperty(TreeIterator.prototype, Symbol.iterator, {
+        value: function() {
+                return this;
+        },
+        writable: false,
+});
+
+TreeIterator.PREV = 1;
+TreeIterator.NEXT = 2;
+TreeIterator.PARENT = 3;
+TreeIterator.PRECEDING = 4;
+TreeIterator.FOLLOWING = 5;
+
+Object.freeze(TreeIterator);
+Object.freeze(TreeIterator.prototype);
+
+module.exports = TreeIterator;
+
+},{}],9:[function(require,module,exports){
+'use strict';
+
+/* eslint-disable sort-keys */
+module.exports = Object.freeze({
+        // same as DOM DOCUMENT_POSITION_
+        DISCONNECTED: 1,
+        PRECEDING: 2,
+        FOLLOWING: 4,
+        CONTAINS: 8,
+        CONTAINED_BY: 16,
+});
+
+},{}],10:[function(require,module,exports){
+// TODO check if fonts exist... handle xhttp error promise and error handling
+
+const ot = require("opentype.js");
+const Tree = require("symbol-tree");
+// hasPointInside is used
+const { hasPointInside, contains } = require("@jscad/csg/src/core/utils/cagValidation");
+const pointInCag = hasPointInside; // TODO haspointinside as ... something
+const cagInCag = contains; // TODO haspointinside as ... something
+
+function myCurl(url) {
+//  console.log("curl: " + url);
+//  console.log("self");
+//  console.log(self);
+//  console.log("self.location");
+//  console.log(self.location);
+
+  url = self.location ? new URL(url, self.location.origin).toString() : url;
+//  console.log(url);
+  // TODO test why ot.load is not working in worker? 
+  return new Promise((resolve,reject) => {
+    var xhttp = new XMLHttpRequest();
+    xhttp.onreadystatechange = function() {
+      if (this.readyState == 4 && this.status == 200) {
+        //console.log("got it");
+        resolve(xhttp.response);
+      } else if (this.readyState == 4) {
+        throw new Error(`Error getting ${url} (Http Error: ${this.status}`);
+        // return Promise.reject( ???
+        // reject("Http Error: " + this.status);
+      }
+    };
+    xhttp.open("GET", url, true);
+    xhttp.responseType = "arraybuffer"; //for now only binary
+    xhttp.send(); 
+  });
+}
+
+
+const load = (fontFileName) => {
+  //console.log(`Font3D load: ${fontFileName}`);
+
+  //return new Promise hmmm
+  return myCurl(fontFileName)
+    .then((fontData) => {
+      return new Promise((resolve, reject) => {
+        const font = ot.parse(fontData);   
+        resolve(font);  
+      });
+    });
+}
+
+const parse = (fontData) => {
+  return ot.parse(fontData);
+}
+
+const fPath2cPath = (fp) => {
+  let csgPath = []; // array of csg paths
+  let np; // nexPath
+  let gotEnd = true;
+
+  for (let i = 0; i < fp.commands.length; i += 1) {
+    const cmd = fp.commands[i];
+/* // only for microphone
+    if ( (i > (19+170+9)) && (i < (19+170+9+239))) {
+      console.log(cmd);
+    }
+*/
+//    console.log("cmd: " +cmd.type);
+//    console.log(JSON.stringify(cmd));
+    switch(cmd.type) {
+      case "M": 
+        if(!gotEnd) {
+          console.log("########### unclosed path ############");
+        }
+        gotEnd = false;
+
+        np = new CSG.Path2D();//{data:[]};
+        np = np.appendPoint([cmd.x, -cmd.y]);
+        break;
+      case "Z": // close
+//        console.log("got close");
+        gotEnd = true; 
+        np = np.close();
+        csgPath.push(np);
+        break;
+      case "L": // line
+        np = np.appendPoint([cmd.x, -cmd.y]);
+        break;
+      case "C": // curve TODO
+        np = np.appendBezier([[cmd.x1, -cmd.y1],[cmd.x2, -cmd.y2],[cmd.x, -cmd.y]], {resolution: 30}); // default = 32
+        break;
+      case "Q": // quadrathingy TODO
+        np = np.appendBezier([[cmd.x1, -cmd.y1],[cmd.x, -cmd.y]], {resolution: 30});
+        break;
+    }
+  }
+  return csgPath;
+}
+
+const rawCagsFromPath = (charPath) => {
+  // convert font paths to CAG paths
+  const cp = fPath2cPath(charPath);
+  //    console.log("cp:");
+  //    console.log(cp);
+
+  if (cp.length > 0) {
+    // make raw cags
+    const cags = cp.map(p => {
+      try {
+        //console.log(p);
+        let itc = p.innerToCAG();
+        return itc;
+      } catch (e) {
+        console.log("skipping path... is it intersecting?");
+        console.log(e);
+        //let res = [];
+      }
+    });
+    //  console.log(cags);
+    return cags;
+  } else {
+    return false;
+  }
+}
+
+const cagsFromString = (font, str, size, options) => { // TODO add other params
+  //console.log("cagFromString");
+//  console.log("typeof str:");
+// console.log(typeof str);
+  if (typeof str === 'undefined' || str.length < 1) {
+    throw new Error("Font3D.cagFromString needs string as 2nd parameter");
+  }
+
+  // get fontpath array
+  const fpa = font.getPaths(str, 0, 0, size);  
+  const charCags = [];
+
+  for (fp of fpa) { 
+    
+    // convert font paths to CAG paths
+    const cp = fPath2cPath(fp);
+    const cags = rawCagsFromPath(fp);
+    if (cags) {
+  //  console.log(cags);
+      const tree = makeCagTree(cags);
+  //  console.log(tree);
+      charCags.push(cagFromCagTree(tree));
+    }
+  }
+  return charCags;
+}
+
+// sorts cags 
+// where the fit in 
+// returns [{cag:a, children[{cag:b,children[]}, {cag:c, children[]}]]
+const makeCagTree = cags => {
+  // inner function recursive
+  const fitInTree = (branch, cag) => {
+ //   console.log("fitInTree:");
+    if (!cag) {
+      return branch;
+    }
+    let p = cag.sides[1].vertex0.pos;
+
+    for (el of branch) {
+      if(cagInCag(cag, el.cag)) {
+        // huh, glyph doesn't start with big part first (find a spec somewhere)
+        // TODO investigate... if this works very well
+        console.log("small part first???");
+        let tmp = el.cag;
+        el.cag = cag; 
+        cag = tmp;
+        fitInTree(el.children, cag);
+      }
+      //if(pointInCag(el.cag, p)) {
+      if(cagInCag(el.cag, cag)) { //slower but more precise
+//      if(contains(cag, el.cag)) { //slower but more precise
+//        console.log("*** point in cag"); 
+        // don't need return it's the same tree is altered
+        fitInTree(el.children, cag);
+        return branch
+      }
+    }
+
+    // did not fit in children push it here 
+//    console.log("nothing in current branch so push it here"); 
+    branch.push({cag: cag, children: []});
+//   console.log();
+    return branch;
+  }
+
+
+  let tree = [];
+  
+  for (cag of cags) {
+//    console.log("\ncag:");
+//    console.log(cag);
+    
+    tree = fitInTree(tree, cag);
+//    console.log("tree:");
+//    console.log(tree);
+  }
+ 
+  return tree;
+}
+
+
+// walks tree and cuts or adds cags
+const cagFromCagTree = cagTree => {
+    
+  const processChildren = (parentCag, depth) => {
+    let branch = parentCag.children; 
+
+    let res = [];
+    for (cag of branch) {
+     // console.log("cagotree:" + depth);
+     // console.log(cag);
+
+      if (cag.children.length > 0) {
+      //  console.log("has children");
+        res.push(cag.cag.subtract(processChildren(cag, depth+1)));
+      } else {
+      //  console.log("no children");
+        res.push(cag.cag)
+      }
+    }
+    //console.log("walked this level" + depth);
+    //console.log(res);
+    if ( res.length > 0 ) {
+      return res[0].union(res);
+    } else {
+      // TODO fix? this... can I use undefined like this?
+      return undefined;
+    }
+  }
+
+//  console.log("make cag from tree");
+  let root = { children: cagTree }
+  let res = processChildren(root, 0);
+ // console.log(res);
+
+ return res;
+}
+
+// TODO "stack" it? meaning use cagTreeFromGlyph
+const cagFromGlyph = (font, glyphIndex, size, options) => {
+  const gp = font.glyphs.get(glyphIndex).getPath(0,0,size,options);
+  const cags = rawCagsFromPath(gp);
+//  console.log("rawCags");
+//  console.log(cags);
+  const tree = makeCagTree(cags);
+  const cag = cagFromCagTree(tree);
+ 
+  return cag;
+}
+
+// usefull??
+// can be used to create outline
+const cagTreeFromChar = (font, char, size, options) => {
+  const cp = font.charToGlyph(char).getPath(0,0,size,options);
+  const cags = rawCagsFromPath(gp);
+  const tree = makeCagTree(cags);
+  return tree;
+}
+
+const cagTreeFromGlyph = (font, glyphIndex, size, options) => {
+  const gp = font.glyphs.get(glyphIndex).getPath(0,0,size,options);
+  const cags = rawCagsFromPath(gp);
+  const tree = makeCagTree(cags);
+  return tree;
+}
+
+// TODO make this absolete by adding an option to return a cagsTree instead of cag
+const cagTreeFromString = (font, str, size, options) => { 
+  if (typeof str === 'undefined' || str.length < 1) {
+    throw new Error("Font3D.cagFromString needs string as 2nd parameter");
+  }
+
+  // get fontpath array
+  const fpa = font.getPaths(str, 0, 0, size);  
+  const charCagsTree = [];
+
+  for (fp of fpa) { 
+    
+    // convert font paths to CAG paths
+    const cp = fPath2cPath(fp);
+    const cags = rawCagsFromPath(fp);
+    if (cags) {
+  //  console.log(cags);
+      const tree = makeCagTree(cags);
+  //  console.log(tree);
+      carCagsTree.push(tree);
+    //  charCags.push(cagFromCagTree(tree));
+    }
+  }
+  return charCagsTree;
+}
+ 
+const Font3D = {
+  load,
+  parse,
+  cagsFromString,
+  cagFromGlyph,
+  cagTreeFromGlyph, // usefull for graphical debugging
+  cagTreeFromChar, //usefull for graphical debugging
+  cagTreeFromString, //usefull for graphical debugging
+}
+ 
+module.exports = Font3D;
+
+},{"@jscad/csg/src/core/utils/cagValidation":4,"opentype.js":5,"symbol-tree":6}],11:[function(require,module,exports){
+'use strict'
+
+exports.byteLength = byteLength
+exports.toByteArray = toByteArray
+exports.fromByteArray = fromByteArray
+
+var lookup = []
+var revLookup = []
+var Arr = typeof Uint8Array !== 'undefined' ? Uint8Array : Array
+
+var code = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+for (var i = 0, len = code.length; i < len; ++i) {
+  lookup[i] = code[i]
+  revLookup[code.charCodeAt(i)] = i
+}
+
+// Support decoding URL-safe base64 strings, as Node.js does.
+// See: https://en.wikipedia.org/wiki/Base64#URL_applications
+revLookup['-'.charCodeAt(0)] = 62
+revLookup['_'.charCodeAt(0)] = 63
+
+function getLens (b64) {
+  var len = b64.length
+
+  if (len % 4 > 0) {
+    throw new Error('Invalid string. Length must be a multiple of 4')
+  }
+
+  // Trim off extra bytes after placeholder bytes are found
+  // See: https://github.com/beatgammit/base64-js/issues/42
+  var validLen = b64.indexOf('=')
+  if (validLen === -1) validLen = len
+
+  var placeHoldersLen = validLen === len
+    ? 0
+    : 4 - (validLen % 4)
+
+  return [validLen, placeHoldersLen]
+}
+
+// base64 is 4/3 + up to two characters of the original data
+function byteLength (b64) {
+  var lens = getLens(b64)
+  var validLen = lens[0]
+  var placeHoldersLen = lens[1]
+  return ((validLen + placeHoldersLen) * 3 / 4) - placeHoldersLen
+}
+
+function _byteLength (b64, validLen, placeHoldersLen) {
+  return ((validLen + placeHoldersLen) * 3 / 4) - placeHoldersLen
+}
+
+function toByteArray (b64) {
+  var tmp
+  var lens = getLens(b64)
+  var validLen = lens[0]
+  var placeHoldersLen = lens[1]
+
+  var arr = new Arr(_byteLength(b64, validLen, placeHoldersLen))
+
+  var curByte = 0
+
+  // if there are placeholders, only get up to the last complete 4 chars
+  var len = placeHoldersLen > 0
+    ? validLen - 4
+    : validLen
+
+  for (var i = 0; i < len; i += 4) {
+    tmp =
+      (revLookup[b64.charCodeAt(i)] << 18) |
+      (revLookup[b64.charCodeAt(i + 1)] << 12) |
+      (revLookup[b64.charCodeAt(i + 2)] << 6) |
+      revLookup[b64.charCodeAt(i + 3)]
+    arr[curByte++] = (tmp >> 16) & 0xFF
+    arr[curByte++] = (tmp >> 8) & 0xFF
+    arr[curByte++] = tmp & 0xFF
+  }
+
+  if (placeHoldersLen === 2) {
+    tmp =
+      (revLookup[b64.charCodeAt(i)] << 2) |
+      (revLookup[b64.charCodeAt(i + 1)] >> 4)
+    arr[curByte++] = tmp & 0xFF
+  }
+
+  if (placeHoldersLen === 1) {
+    tmp =
+      (revLookup[b64.charCodeAt(i)] << 10) |
+      (revLookup[b64.charCodeAt(i + 1)] << 4) |
+      (revLookup[b64.charCodeAt(i + 2)] >> 2)
+    arr[curByte++] = (tmp >> 8) & 0xFF
+    arr[curByte++] = tmp & 0xFF
+  }
+
+  return arr
+}
+
+function tripletToBase64 (num) {
+  return lookup[num >> 18 & 0x3F] +
+    lookup[num >> 12 & 0x3F] +
+    lookup[num >> 6 & 0x3F] +
+    lookup[num & 0x3F]
+}
+
+function encodeChunk (uint8, start, end) {
+  var tmp
+  var output = []
+  for (var i = start; i < end; i += 3) {
+    tmp =
+      ((uint8[i] << 16) & 0xFF0000) +
+      ((uint8[i + 1] << 8) & 0xFF00) +
+      (uint8[i + 2] & 0xFF)
+    output.push(tripletToBase64(tmp))
+  }
+  return output.join('')
+}
+
+function fromByteArray (uint8) {
+  var tmp
+  var len = uint8.length
+  var extraBytes = len % 3 // if we have 1 byte left, pad 2 bytes
+  var parts = []
+  var maxChunkLength = 16383 // must be multiple of 3
+
+  // go through the array every three bytes, we'll deal with trailing stuff later
+  for (var i = 0, len2 = len - extraBytes; i < len2; i += maxChunkLength) {
+    parts.push(encodeChunk(
+      uint8, i, (i + maxChunkLength) > len2 ? len2 : (i + maxChunkLength)
+    ))
+  }
+
+  // pad the end with zeros, but make sure to not forget the extra bytes
+  if (extraBytes === 1) {
+    tmp = uint8[len - 1]
+    parts.push(
+      lookup[tmp >> 2] +
+      lookup[(tmp << 4) & 0x3F] +
+      '=='
+    )
+  } else if (extraBytes === 2) {
+    tmp = (uint8[len - 2] << 8) + uint8[len - 1]
+    parts.push(
+      lookup[tmp >> 10] +
+      lookup[(tmp >> 4) & 0x3F] +
+      lookup[(tmp << 2) & 0x3F] +
+      '='
+    )
+  }
+
+  return parts.join('')
+}
+
+},{}],12:[function(require,module,exports){
+
+},{}],13:[function(require,module,exports){
+/*!
+ * The buffer module from node.js, for the browser.
+ *
+ * @author   Feross Aboukhadijeh <https://feross.org>
+ * @license  MIT
+ */
+/* eslint-disable no-proto */
+
+'use strict'
+
+var base64 = require('base64-js')
+var ieee754 = require('ieee754')
+
+exports.Buffer = Buffer
+exports.SlowBuffer = SlowBuffer
+exports.INSPECT_MAX_BYTES = 50
+
+var K_MAX_LENGTH = 0x7fffffff
+exports.kMaxLength = K_MAX_LENGTH
+
+/**
+ * If `Buffer.TYPED_ARRAY_SUPPORT`:
+ *   === true    Use Uint8Array implementation (fastest)
+ *   === false   Print warning and recommend using `buffer` v4.x which has an Object
+ *               implementation (most compatible, even IE6)
+ *
+ * Browsers that support typed arrays are IE 10+, Firefox 4+, Chrome 7+, Safari 5.1+,
+ * Opera 11.6+, iOS 4.2+.
+ *
+ * We report that the browser does not support typed arrays if the are not subclassable
+ * using __proto__. Firefox 4-29 lacks support for adding new properties to `Uint8Array`
+ * (See: https://bugzilla.mozilla.org/show_bug.cgi?id=695438). IE 10 lacks support
+ * for __proto__ and has a buggy typed array implementation.
+ */
+Buffer.TYPED_ARRAY_SUPPORT = typedArraySupport()
+
+if (!Buffer.TYPED_ARRAY_SUPPORT && typeof console !== 'undefined' &&
+    typeof console.error === 'function') {
+  console.error(
+    'This browser lacks typed array (Uint8Array) support which is required by ' +
+    '`buffer` v5.x. Use `buffer` v4.x if you require old browser support.'
+  )
+}
+
+function typedArraySupport () {
+  // Can typed array instances can be augmented?
+  try {
+    var arr = new Uint8Array(1)
+    arr.__proto__ = {__proto__: Uint8Array.prototype, foo: function () { return 42 }}
+    return arr.foo() === 42
+  } catch (e) {
+    return false
+  }
+}
+
+Object.defineProperty(Buffer.prototype, 'parent', {
+  enumerable: true,
+  get: function () {
+    if (!Buffer.isBuffer(this)) return undefined
+    return this.buffer
+  }
+})
+
+Object.defineProperty(Buffer.prototype, 'offset', {
+  enumerable: true,
+  get: function () {
+    if (!Buffer.isBuffer(this)) return undefined
+    return this.byteOffset
+  }
+})
+
+function createBuffer (length) {
+  if (length > K_MAX_LENGTH) {
+    throw new RangeError('The value "' + length + '" is invalid for option "size"')
+  }
+  // Return an augmented `Uint8Array` instance
+  var buf = new Uint8Array(length)
+  buf.__proto__ = Buffer.prototype
+  return buf
+}
+
+/**
+ * The Buffer constructor returns instances of `Uint8Array` that have their
+ * prototype changed to `Buffer.prototype`. Furthermore, `Buffer` is a subclass of
+ * `Uint8Array`, so the returned instances will have all the node `Buffer` methods
+ * and the `Uint8Array` methods. Square bracket notation works as expected -- it
+ * returns a single octet.
+ *
+ * The `Uint8Array` prototype remains unmodified.
+ */
+
+function Buffer (arg, encodingOrOffset, length) {
+  // Common case.
+  if (typeof arg === 'number') {
+    if (typeof encodingOrOffset === 'string') {
+      throw new TypeError(
+        'The "string" argument must be of type string. Received type number'
+      )
+    }
+    return allocUnsafe(arg)
+  }
+  return from(arg, encodingOrOffset, length)
+}
+
+// Fix subarray() in ES2016. See: https://github.com/feross/buffer/pull/97
+if (typeof Symbol !== 'undefined' && Symbol.species != null &&
+    Buffer[Symbol.species] === Buffer) {
+  Object.defineProperty(Buffer, Symbol.species, {
+    value: null,
+    configurable: true,
+    enumerable: false,
+    writable: false
+  })
+}
+
+Buffer.poolSize = 8192 // not used by this implementation
+
+function from (value, encodingOrOffset, length) {
+  if (typeof value === 'string') {
+    return fromString(value, encodingOrOffset)
+  }
+
+  if (ArrayBuffer.isView(value)) {
+    return fromArrayLike(value)
+  }
+
+  if (value == null) {
+    throw TypeError(
+      'The first argument must be one of type string, Buffer, ArrayBuffer, Array, ' +
+      'or Array-like Object. Received type ' + (typeof value)
+    )
+  }
+
+  if (isInstance(value, ArrayBuffer) ||
+      (value && isInstance(value.buffer, ArrayBuffer))) {
+    return fromArrayBuffer(value, encodingOrOffset, length)
+  }
+
+  if (typeof value === 'number') {
+    throw new TypeError(
+      'The "value" argument must not be of type number. Received type number'
+    )
+  }
+
+  var valueOf = value.valueOf && value.valueOf()
+  if (valueOf != null && valueOf !== value) {
+    return Buffer.from(valueOf, encodingOrOffset, length)
+  }
+
+  var b = fromObject(value)
+  if (b) return b
+
+  if (typeof Symbol !== 'undefined' && Symbol.toPrimitive != null &&
+      typeof value[Symbol.toPrimitive] === 'function') {
+    return Buffer.from(
+      value[Symbol.toPrimitive]('string'), encodingOrOffset, length
+    )
+  }
+
+  throw new TypeError(
+    'The first argument must be one of type string, Buffer, ArrayBuffer, Array, ' +
+    'or Array-like Object. Received type ' + (typeof value)
+  )
+}
+
+/**
+ * Functionally equivalent to Buffer(arg, encoding) but throws a TypeError
+ * if value is a number.
+ * Buffer.from(str[, encoding])
+ * Buffer.from(array)
+ * Buffer.from(buffer)
+ * Buffer.from(arrayBuffer[, byteOffset[, length]])
+ **/
+Buffer.from = function (value, encodingOrOffset, length) {
+  return from(value, encodingOrOffset, length)
+}
+
+// Note: Change prototype *after* Buffer.from is defined to workaround Chrome bug:
+// https://github.com/feross/buffer/pull/148
+Buffer.prototype.__proto__ = Uint8Array.prototype
+Buffer.__proto__ = Uint8Array
+
+function assertSize (size) {
+  if (typeof size !== 'number') {
+    throw new TypeError('"size" argument must be of type number')
+  } else if (size < 0) {
+    throw new RangeError('The value "' + size + '" is invalid for option "size"')
+  }
+}
+
+function alloc (size, fill, encoding) {
+  assertSize(size)
+  if (size <= 0) {
+    return createBuffer(size)
+  }
+  if (fill !== undefined) {
+    // Only pay attention to encoding if it's a string. This
+    // prevents accidentally sending in a number that would
+    // be interpretted as a start offset.
+    return typeof encoding === 'string'
+      ? createBuffer(size).fill(fill, encoding)
+      : createBuffer(size).fill(fill)
+  }
+  return createBuffer(size)
+}
+
+/**
+ * Creates a new filled Buffer instance.
+ * alloc(size[, fill[, encoding]])
+ **/
+Buffer.alloc = function (size, fill, encoding) {
+  return alloc(size, fill, encoding)
+}
+
+function allocUnsafe (size) {
+  assertSize(size)
+  return createBuffer(size < 0 ? 0 : checked(size) | 0)
+}
+
+/**
+ * Equivalent to Buffer(num), by default creates a non-zero-filled Buffer instance.
+ * */
+Buffer.allocUnsafe = function (size) {
+  return allocUnsafe(size)
+}
+/**
+ * Equivalent to SlowBuffer(num), by default creates a non-zero-filled Buffer instance.
+ */
+Buffer.allocUnsafeSlow = function (size) {
+  return allocUnsafe(size)
+}
+
+function fromString (string, encoding) {
+  if (typeof encoding !== 'string' || encoding === '') {
+    encoding = 'utf8'
+  }
+
+  if (!Buffer.isEncoding(encoding)) {
+    throw new TypeError('Unknown encoding: ' + encoding)
+  }
+
+  var length = byteLength(string, encoding) | 0
+  var buf = createBuffer(length)
+
+  var actual = buf.write(string, encoding)
+
+  if (actual !== length) {
+    // Writing a hex string, for example, that contains invalid characters will
+    // cause everything after the first invalid character to be ignored. (e.g.
+    // 'abxxcd' will be treated as 'ab')
+    buf = buf.slice(0, actual)
+  }
+
+  return buf
+}
+
+function fromArrayLike (array) {
+  var length = array.length < 0 ? 0 : checked(array.length) | 0
+  var buf = createBuffer(length)
+  for (var i = 0; i < length; i += 1) {
+    buf[i] = array[i] & 255
+  }
+  return buf
+}
+
+function fromArrayBuffer (array, byteOffset, length) {
+  if (byteOffset < 0 || array.byteLength < byteOffset) {
+    throw new RangeError('"offset" is outside of buffer bounds')
+  }
+
+  if (array.byteLength < byteOffset + (length || 0)) {
+    throw new RangeError('"length" is outside of buffer bounds')
+  }
+
+  var buf
+  if (byteOffset === undefined && length === undefined) {
+    buf = new Uint8Array(array)
+  } else if (length === undefined) {
+    buf = new Uint8Array(array, byteOffset)
+  } else {
+    buf = new Uint8Array(array, byteOffset, length)
+  }
+
+  // Return an augmented `Uint8Array` instance
+  buf.__proto__ = Buffer.prototype
+  return buf
+}
+
+function fromObject (obj) {
+  if (Buffer.isBuffer(obj)) {
+    var len = checked(obj.length) | 0
+    var buf = createBuffer(len)
+
+    if (buf.length === 0) {
+      return buf
+    }
+
+    obj.copy(buf, 0, 0, len)
+    return buf
+  }
+
+  if (obj.length !== undefined) {
+    if (typeof obj.length !== 'number' || numberIsNaN(obj.length)) {
+      return createBuffer(0)
+    }
+    return fromArrayLike(obj)
+  }
+
+  if (obj.type === 'Buffer' && Array.isArray(obj.data)) {
+    return fromArrayLike(obj.data)
+  }
+}
+
+function checked (length) {
+  // Note: cannot use `length < K_MAX_LENGTH` here because that fails when
+  // length is NaN (which is otherwise coerced to zero.)
+  if (length >= K_MAX_LENGTH) {
+    throw new RangeError('Attempt to allocate Buffer larger than maximum ' +
+                         'size: 0x' + K_MAX_LENGTH.toString(16) + ' bytes')
+  }
+  return length | 0
+}
+
+function SlowBuffer (length) {
+  if (+length != length) { // eslint-disable-line eqeqeq
+    length = 0
+  }
+  return Buffer.alloc(+length)
+}
+
+Buffer.isBuffer = function isBuffer (b) {
+  return b != null && b._isBuffer === true &&
+    b !== Buffer.prototype // so Buffer.isBuffer(Buffer.prototype) will be false
+}
+
+Buffer.compare = function compare (a, b) {
+  if (isInstance(a, Uint8Array)) a = Buffer.from(a, a.offset, a.byteLength)
+  if (isInstance(b, Uint8Array)) b = Buffer.from(b, b.offset, b.byteLength)
+  if (!Buffer.isBuffer(a) || !Buffer.isBuffer(b)) {
+    throw new TypeError(
+      'The "buf1", "buf2" arguments must be one of type Buffer or Uint8Array'
+    )
+  }
+
+  if (a === b) return 0
+
+  var x = a.length
+  var y = b.length
+
+  for (var i = 0, len = Math.min(x, y); i < len; ++i) {
+    if (a[i] !== b[i]) {
+      x = a[i]
+      y = b[i]
+      break
+    }
+  }
+
+  if (x < y) return -1
+  if (y < x) return 1
+  return 0
+}
+
+Buffer.isEncoding = function isEncoding (encoding) {
+  switch (String(encoding).toLowerCase()) {
+    case 'hex':
+    case 'utf8':
+    case 'utf-8':
+    case 'ascii':
+    case 'latin1':
+    case 'binary':
+    case 'base64':
+    case 'ucs2':
+    case 'ucs-2':
+    case 'utf16le':
+    case 'utf-16le':
+      return true
+    default:
+      return false
+  }
+}
+
+Buffer.concat = function concat (list, length) {
+  if (!Array.isArray(list)) {
+    throw new TypeError('"list" argument must be an Array of Buffers')
+  }
+
+  if (list.length === 0) {
+    return Buffer.alloc(0)
+  }
+
+  var i
+  if (length === undefined) {
+    length = 0
+    for (i = 0; i < list.length; ++i) {
+      length += list[i].length
+    }
+  }
+
+  var buffer = Buffer.allocUnsafe(length)
+  var pos = 0
+  for (i = 0; i < list.length; ++i) {
+    var buf = list[i]
+    if (isInstance(buf, Uint8Array)) {
+      buf = Buffer.from(buf)
+    }
+    if (!Buffer.isBuffer(buf)) {
+      throw new TypeError('"list" argument must be an Array of Buffers')
+    }
+    buf.copy(buffer, pos)
+    pos += buf.length
+  }
+  return buffer
+}
+
+function byteLength (string, encoding) {
+  if (Buffer.isBuffer(string)) {
+    return string.length
+  }
+  if (ArrayBuffer.isView(string) || isInstance(string, ArrayBuffer)) {
+    return string.byteLength
+  }
+  if (typeof string !== 'string') {
+    throw new TypeError(
+      'The "string" argument must be one of type string, Buffer, or ArrayBuffer. ' +
+      'Received type ' + typeof string
+    )
+  }
+
+  var len = string.length
+  var mustMatch = (arguments.length > 2 && arguments[2] === true)
+  if (!mustMatch && len === 0) return 0
+
+  // Use a for loop to avoid recursion
+  var loweredCase = false
+  for (;;) {
+    switch (encoding) {
+      case 'ascii':
+      case 'latin1':
+      case 'binary':
+        return len
+      case 'utf8':
+      case 'utf-8':
+        return utf8ToBytes(string).length
+      case 'ucs2':
+      case 'ucs-2':
+      case 'utf16le':
+      case 'utf-16le':
+        return len * 2
+      case 'hex':
+        return len >>> 1
+      case 'base64':
+        return base64ToBytes(string).length
+      default:
+        if (loweredCase) {
+          return mustMatch ? -1 : utf8ToBytes(string).length // assume utf8
+        }
+        encoding = ('' + encoding).toLowerCase()
+        loweredCase = true
+    }
+  }
+}
+Buffer.byteLength = byteLength
+
+function slowToString (encoding, start, end) {
+  var loweredCase = false
+
+  // No need to verify that "this.length <= MAX_UINT32" since it's a read-only
+  // property of a typed array.
+
+  // This behaves neither like String nor Uint8Array in that we set start/end
+  // to their upper/lower bounds if the value passed is out of range.
+  // undefined is handled specially as per ECMA-262 6th Edition,
+  // Section 13.3.3.7 Runtime Semantics: KeyedBindingInitialization.
+  if (start === undefined || start < 0) {
+    start = 0
+  }
+  // Return early if start > this.length. Done here to prevent potential uint32
+  // coercion fail below.
+  if (start > this.length) {
+    return ''
+  }
+
+  if (end === undefined || end > this.length) {
+    end = this.length
+  }
+
+  if (end <= 0) {
+    return ''
+  }
+
+  // Force coersion to uint32. This will also coerce falsey/NaN values to 0.
+  end >>>= 0
+  start >>>= 0
+
+  if (end <= start) {
+    return ''
+  }
+
+  if (!encoding) encoding = 'utf8'
+
+  while (true) {
+    switch (encoding) {
+      case 'hex':
+        return hexSlice(this, start, end)
+
+      case 'utf8':
+      case 'utf-8':
+        return utf8Slice(this, start, end)
+
+      case 'ascii':
+        return asciiSlice(this, start, end)
+
+      case 'latin1':
+      case 'binary':
+        return latin1Slice(this, start, end)
+
+      case 'base64':
+        return base64Slice(this, start, end)
+
+      case 'ucs2':
+      case 'ucs-2':
+      case 'utf16le':
+      case 'utf-16le':
+        return utf16leSlice(this, start, end)
+
+      default:
+        if (loweredCase) throw new TypeError('Unknown encoding: ' + encoding)
+        encoding = (encoding + '').toLowerCase()
+        loweredCase = true
+    }
+  }
+}
+
+// This property is used by `Buffer.isBuffer` (and the `is-buffer` npm package)
+// to detect a Buffer instance. It's not possible to use `instanceof Buffer`
+// reliably in a browserify context because there could be multiple different
+// copies of the 'buffer' package in use. This method works even for Buffer
+// instances that were created from another copy of the `buffer` package.
+// See: https://github.com/feross/buffer/issues/154
+Buffer.prototype._isBuffer = true
+
+function swap (b, n, m) {
+  var i = b[n]
+  b[n] = b[m]
+  b[m] = i
+}
+
+Buffer.prototype.swap16 = function swap16 () {
+  var len = this.length
+  if (len % 2 !== 0) {
+    throw new RangeError('Buffer size must be a multiple of 16-bits')
+  }
+  for (var i = 0; i < len; i += 2) {
+    swap(this, i, i + 1)
+  }
+  return this
+}
+
+Buffer.prototype.swap32 = function swap32 () {
+  var len = this.length
+  if (len % 4 !== 0) {
+    throw new RangeError('Buffer size must be a multiple of 32-bits')
+  }
+  for (var i = 0; i < len; i += 4) {
+    swap(this, i, i + 3)
+    swap(this, i + 1, i + 2)
+  }
+  return this
+}
+
+Buffer.prototype.swap64 = function swap64 () {
+  var len = this.length
+  if (len % 8 !== 0) {
+    throw new RangeError('Buffer size must be a multiple of 64-bits')
+  }
+  for (var i = 0; i < len; i += 8) {
+    swap(this, i, i + 7)
+    swap(this, i + 1, i + 6)
+    swap(this, i + 2, i + 5)
+    swap(this, i + 3, i + 4)
+  }
+  return this
+}
+
+Buffer.prototype.toString = function toString () {
+  var length = this.length
+  if (length === 0) return ''
+  if (arguments.length === 0) return utf8Slice(this, 0, length)
+  return slowToString.apply(this, arguments)
+}
+
+Buffer.prototype.toLocaleString = Buffer.prototype.toString
+
+Buffer.prototype.equals = function equals (b) {
+  if (!Buffer.isBuffer(b)) throw new TypeError('Argument must be a Buffer')
+  if (this === b) return true
+  return Buffer.compare(this, b) === 0
+}
+
+Buffer.prototype.inspect = function inspect () {
+  var str = ''
+  var max = exports.INSPECT_MAX_BYTES
+  str = this.toString('hex', 0, max).replace(/(.{2})/g, '$1 ').trim()
+  if (this.length > max) str += ' ... '
+  return '<Buffer ' + str + '>'
+}
+
+Buffer.prototype.compare = function compare (target, start, end, thisStart, thisEnd) {
+  if (isInstance(target, Uint8Array)) {
+    target = Buffer.from(target, target.offset, target.byteLength)
+  }
+  if (!Buffer.isBuffer(target)) {
+    throw new TypeError(
+      'The "target" argument must be one of type Buffer or Uint8Array. ' +
+      'Received type ' + (typeof target)
+    )
+  }
+
+  if (start === undefined) {
+    start = 0
+  }
+  if (end === undefined) {
+    end = target ? target.length : 0
+  }
+  if (thisStart === undefined) {
+    thisStart = 0
+  }
+  if (thisEnd === undefined) {
+    thisEnd = this.length
+  }
+
+  if (start < 0 || end > target.length || thisStart < 0 || thisEnd > this.length) {
+    throw new RangeError('out of range index')
+  }
+
+  if (thisStart >= thisEnd && start >= end) {
+    return 0
+  }
+  if (thisStart >= thisEnd) {
+    return -1
+  }
+  if (start >= end) {
+    return 1
+  }
+
+  start >>>= 0
+  end >>>= 0
+  thisStart >>>= 0
+  thisEnd >>>= 0
+
+  if (this === target) return 0
+
+  var x = thisEnd - thisStart
+  var y = end - start
+  var len = Math.min(x, y)
+
+  var thisCopy = this.slice(thisStart, thisEnd)
+  var targetCopy = target.slice(start, end)
+
+  for (var i = 0; i < len; ++i) {
+    if (thisCopy[i] !== targetCopy[i]) {
+      x = thisCopy[i]
+      y = targetCopy[i]
+      break
+    }
+  }
+
+  if (x < y) return -1
+  if (y < x) return 1
+  return 0
+}
+
+// Finds either the first index of `val` in `buffer` at offset >= `byteOffset`,
+// OR the last index of `val` in `buffer` at offset <= `byteOffset`.
+//
+// Arguments:
+// - buffer - a Buffer to search
+// - val - a string, Buffer, or number
+// - byteOffset - an index into `buffer`; will be clamped to an int32
+// - encoding - an optional encoding, relevant is val is a string
+// - dir - true for indexOf, false for lastIndexOf
+function bidirectionalIndexOf (buffer, val, byteOffset, encoding, dir) {
+  // Empty buffer means no match
+  if (buffer.length === 0) return -1
+
+  // Normalize byteOffset
+  if (typeof byteOffset === 'string') {
+    encoding = byteOffset
+    byteOffset = 0
+  } else if (byteOffset > 0x7fffffff) {
+    byteOffset = 0x7fffffff
+  } else if (byteOffset < -0x80000000) {
+    byteOffset = -0x80000000
+  }
+  byteOffset = +byteOffset // Coerce to Number.
+  if (numberIsNaN(byteOffset)) {
+    // byteOffset: it it's undefined, null, NaN, "foo", etc, search whole buffer
+    byteOffset = dir ? 0 : (buffer.length - 1)
+  }
+
+  // Normalize byteOffset: negative offsets start from the end of the buffer
+  if (byteOffset < 0) byteOffset = buffer.length + byteOffset
+  if (byteOffset >= buffer.length) {
+    if (dir) return -1
+    else byteOffset = buffer.length - 1
+  } else if (byteOffset < 0) {
+    if (dir) byteOffset = 0
+    else return -1
+  }
+
+  // Normalize val
+  if (typeof val === 'string') {
+    val = Buffer.from(val, encoding)
+  }
+
+  // Finally, search either indexOf (if dir is true) or lastIndexOf
+  if (Buffer.isBuffer(val)) {
+    // Special case: looking for empty string/buffer always fails
+    if (val.length === 0) {
+      return -1
+    }
+    return arrayIndexOf(buffer, val, byteOffset, encoding, dir)
+  } else if (typeof val === 'number') {
+    val = val & 0xFF // Search for a byte value [0-255]
+    if (typeof Uint8Array.prototype.indexOf === 'function') {
+      if (dir) {
+        return Uint8Array.prototype.indexOf.call(buffer, val, byteOffset)
+      } else {
+        return Uint8Array.prototype.lastIndexOf.call(buffer, val, byteOffset)
+      }
+    }
+    return arrayIndexOf(buffer, [ val ], byteOffset, encoding, dir)
+  }
+
+  throw new TypeError('val must be string, number or Buffer')
+}
+
+function arrayIndexOf (arr, val, byteOffset, encoding, dir) {
+  var indexSize = 1
+  var arrLength = arr.length
+  var valLength = val.length
+
+  if (encoding !== undefined) {
+    encoding = String(encoding).toLowerCase()
+    if (encoding === 'ucs2' || encoding === 'ucs-2' ||
+        encoding === 'utf16le' || encoding === 'utf-16le') {
+      if (arr.length < 2 || val.length < 2) {
+        return -1
+      }
+      indexSize = 2
+      arrLength /= 2
+      valLength /= 2
+      byteOffset /= 2
+    }
+  }
+
+  function read (buf, i) {
+    if (indexSize === 1) {
+      return buf[i]
+    } else {
+      return buf.readUInt16BE(i * indexSize)
+    }
+  }
+
+  var i
+  if (dir) {
+    var foundIndex = -1
+    for (i = byteOffset; i < arrLength; i++) {
+      if (read(arr, i) === read(val, foundIndex === -1 ? 0 : i - foundIndex)) {
+        if (foundIndex === -1) foundIndex = i
+        if (i - foundIndex + 1 === valLength) return foundIndex * indexSize
+      } else {
+        if (foundIndex !== -1) i -= i - foundIndex
+        foundIndex = -1
+      }
+    }
+  } else {
+    if (byteOffset + valLength > arrLength) byteOffset = arrLength - valLength
+    for (i = byteOffset; i >= 0; i--) {
+      var found = true
+      for (var j = 0; j < valLength; j++) {
+        if (read(arr, i + j) !== read(val, j)) {
+          found = false
+          break
+        }
+      }
+      if (found) return i
+    }
+  }
+
+  return -1
+}
+
+Buffer.prototype.includes = function includes (val, byteOffset, encoding) {
+  return this.indexOf(val, byteOffset, encoding) !== -1
+}
+
+Buffer.prototype.indexOf = function indexOf (val, byteOffset, encoding) {
+  return bidirectionalIndexOf(this, val, byteOffset, encoding, true)
+}
+
+Buffer.prototype.lastIndexOf = function lastIndexOf (val, byteOffset, encoding) {
+  return bidirectionalIndexOf(this, val, byteOffset, encoding, false)
+}
+
+function hexWrite (buf, string, offset, length) {
+  offset = Number(offset) || 0
+  var remaining = buf.length - offset
+  if (!length) {
+    length = remaining
+  } else {
+    length = Number(length)
+    if (length > remaining) {
+      length = remaining
+    }
+  }
+
+  var strLen = string.length
+
+  if (length > strLen / 2) {
+    length = strLen / 2
+  }
+  for (var i = 0; i < length; ++i) {
+    var parsed = parseInt(string.substr(i * 2, 2), 16)
+    if (numberIsNaN(parsed)) return i
+    buf[offset + i] = parsed
+  }
+  return i
+}
+
+function utf8Write (buf, string, offset, length) {
+  return blitBuffer(utf8ToBytes(string, buf.length - offset), buf, offset, length)
+}
+
+function asciiWrite (buf, string, offset, length) {
+  return blitBuffer(asciiToBytes(string), buf, offset, length)
+}
+
+function latin1Write (buf, string, offset, length) {
+  return asciiWrite(buf, string, offset, length)
+}
+
+function base64Write (buf, string, offset, length) {
+  return blitBuffer(base64ToBytes(string), buf, offset, length)
+}
+
+function ucs2Write (buf, string, offset, length) {
+  return blitBuffer(utf16leToBytes(string, buf.length - offset), buf, offset, length)
+}
+
+Buffer.prototype.write = function write (string, offset, length, encoding) {
+  // Buffer#write(string)
+  if (offset === undefined) {
+    encoding = 'utf8'
+    length = this.length
+    offset = 0
+  // Buffer#write(string, encoding)
+  } else if (length === undefined && typeof offset === 'string') {
+    encoding = offset
+    length = this.length
+    offset = 0
+  // Buffer#write(string, offset[, length][, encoding])
+  } else if (isFinite(offset)) {
+    offset = offset >>> 0
+    if (isFinite(length)) {
+      length = length >>> 0
+      if (encoding === undefined) encoding = 'utf8'
+    } else {
+      encoding = length
+      length = undefined
+    }
+  } else {
+    throw new Error(
+      'Buffer.write(string, encoding, offset[, length]) is no longer supported'
+    )
+  }
+
+  var remaining = this.length - offset
+  if (length === undefined || length > remaining) length = remaining
+
+  if ((string.length > 0 && (length < 0 || offset < 0)) || offset > this.length) {
+    throw new RangeError('Attempt to write outside buffer bounds')
+  }
+
+  if (!encoding) encoding = 'utf8'
+
+  var loweredCase = false
+  for (;;) {
+    switch (encoding) {
+      case 'hex':
+        return hexWrite(this, string, offset, length)
+
+      case 'utf8':
+      case 'utf-8':
+        return utf8Write(this, string, offset, length)
+
+      case 'ascii':
+        return asciiWrite(this, string, offset, length)
+
+      case 'latin1':
+      case 'binary':
+        return latin1Write(this, string, offset, length)
+
+      case 'base64':
+        // Warning: maxLength not taken into account in base64Write
+        return base64Write(this, string, offset, length)
+
+      case 'ucs2':
+      case 'ucs-2':
+      case 'utf16le':
+      case 'utf-16le':
+        return ucs2Write(this, string, offset, length)
+
+      default:
+        if (loweredCase) throw new TypeError('Unknown encoding: ' + encoding)
+        encoding = ('' + encoding).toLowerCase()
+        loweredCase = true
+    }
+  }
+}
+
+Buffer.prototype.toJSON = function toJSON () {
+  return {
+    type: 'Buffer',
+    data: Array.prototype.slice.call(this._arr || this, 0)
+  }
+}
+
+function base64Slice (buf, start, end) {
+  if (start === 0 && end === buf.length) {
+    return base64.fromByteArray(buf)
+  } else {
+    return base64.fromByteArray(buf.slice(start, end))
+  }
+}
+
+function utf8Slice (buf, start, end) {
+  end = Math.min(buf.length, end)
+  var res = []
+
+  var i = start
+  while (i < end) {
+    var firstByte = buf[i]
+    var codePoint = null
+    var bytesPerSequence = (firstByte > 0xEF) ? 4
+      : (firstByte > 0xDF) ? 3
+        : (firstByte > 0xBF) ? 2
+          : 1
+
+    if (i + bytesPerSequence <= end) {
+      var secondByte, thirdByte, fourthByte, tempCodePoint
+
+      switch (bytesPerSequence) {
+        case 1:
+          if (firstByte < 0x80) {
+            codePoint = firstByte
+          }
+          break
+        case 2:
+          secondByte = buf[i + 1]
+          if ((secondByte & 0xC0) === 0x80) {
+            tempCodePoint = (firstByte & 0x1F) << 0x6 | (secondByte & 0x3F)
+            if (tempCodePoint > 0x7F) {
+              codePoint = tempCodePoint
+            }
+          }
+          break
+        case 3:
+          secondByte = buf[i + 1]
+          thirdByte = buf[i + 2]
+          if ((secondByte & 0xC0) === 0x80 && (thirdByte & 0xC0) === 0x80) {
+            tempCodePoint = (firstByte & 0xF) << 0xC | (secondByte & 0x3F) << 0x6 | (thirdByte & 0x3F)
+            if (tempCodePoint > 0x7FF && (tempCodePoint < 0xD800 || tempCodePoint > 0xDFFF)) {
+              codePoint = tempCodePoint
+            }
+          }
+          break
+        case 4:
+          secondByte = buf[i + 1]
+          thirdByte = buf[i + 2]
+          fourthByte = buf[i + 3]
+          if ((secondByte & 0xC0) === 0x80 && (thirdByte & 0xC0) === 0x80 && (fourthByte & 0xC0) === 0x80) {
+            tempCodePoint = (firstByte & 0xF) << 0x12 | (secondByte & 0x3F) << 0xC | (thirdByte & 0x3F) << 0x6 | (fourthByte & 0x3F)
+            if (tempCodePoint > 0xFFFF && tempCodePoint < 0x110000) {
+              codePoint = tempCodePoint
+            }
+          }
+      }
+    }
+
+    if (codePoint === null) {
+      // we did not generate a valid codePoint so insert a
+      // replacement char (U+FFFD) and advance only 1 byte
+      codePoint = 0xFFFD
+      bytesPerSequence = 1
+    } else if (codePoint > 0xFFFF) {
+      // encode to utf16 (surrogate pair dance)
+      codePoint -= 0x10000
+      res.push(codePoint >>> 10 & 0x3FF | 0xD800)
+      codePoint = 0xDC00 | codePoint & 0x3FF
+    }
+
+    res.push(codePoint)
+    i += bytesPerSequence
+  }
+
+  return decodeCodePointsArray(res)
+}
+
+// Based on http://stackoverflow.com/a/22747272/680742, the browser with
+// the lowest limit is Chrome, with 0x10000 args.
+// We go 1 magnitude less, for safety
+var MAX_ARGUMENTS_LENGTH = 0x1000
+
+function decodeCodePointsArray (codePoints) {
+  var len = codePoints.length
+  if (len <= MAX_ARGUMENTS_LENGTH) {
+    return String.fromCharCode.apply(String, codePoints) // avoid extra slice()
+  }
+
+  // Decode in chunks to avoid "call stack size exceeded".
+  var res = ''
+  var i = 0
+  while (i < len) {
+    res += String.fromCharCode.apply(
+      String,
+      codePoints.slice(i, i += MAX_ARGUMENTS_LENGTH)
+    )
+  }
+  return res
+}
+
+function asciiSlice (buf, start, end) {
+  var ret = ''
+  end = Math.min(buf.length, end)
+
+  for (var i = start; i < end; ++i) {
+    ret += String.fromCharCode(buf[i] & 0x7F)
+  }
+  return ret
+}
+
+function latin1Slice (buf, start, end) {
+  var ret = ''
+  end = Math.min(buf.length, end)
+
+  for (var i = start; i < end; ++i) {
+    ret += String.fromCharCode(buf[i])
+  }
+  return ret
+}
+
+function hexSlice (buf, start, end) {
+  var len = buf.length
+
+  if (!start || start < 0) start = 0
+  if (!end || end < 0 || end > len) end = len
+
+  var out = ''
+  for (var i = start; i < end; ++i) {
+    out += toHex(buf[i])
+  }
+  return out
+}
+
+function utf16leSlice (buf, start, end) {
+  var bytes = buf.slice(start, end)
+  var res = ''
+  for (var i = 0; i < bytes.length; i += 2) {
+    res += String.fromCharCode(bytes[i] + (bytes[i + 1] * 256))
+  }
+  return res
+}
+
+Buffer.prototype.slice = function slice (start, end) {
+  var len = this.length
+  start = ~~start
+  end = end === undefined ? len : ~~end
+
+  if (start < 0) {
+    start += len
+    if (start < 0) start = 0
+  } else if (start > len) {
+    start = len
+  }
+
+  if (end < 0) {
+    end += len
+    if (end < 0) end = 0
+  } else if (end > len) {
+    end = len
+  }
+
+  if (end < start) end = start
+
+  var newBuf = this.subarray(start, end)
+  // Return an augmented `Uint8Array` instance
+  newBuf.__proto__ = Buffer.prototype
+  return newBuf
+}
+
+/*
+ * Need to make sure that buffer isn't trying to write out of bounds.
+ */
+function checkOffset (offset, ext, length) {
+  if ((offset % 1) !== 0 || offset < 0) throw new RangeError('offset is not uint')
+  if (offset + ext > length) throw new RangeError('Trying to access beyond buffer length')
+}
+
+Buffer.prototype.readUIntLE = function readUIntLE (offset, byteLength, noAssert) {
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) checkOffset(offset, byteLength, this.length)
+
+  var val = this[offset]
+  var mul = 1
+  var i = 0
+  while (++i < byteLength && (mul *= 0x100)) {
+    val += this[offset + i] * mul
+  }
+
+  return val
+}
+
+Buffer.prototype.readUIntBE = function readUIntBE (offset, byteLength, noAssert) {
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) {
+    checkOffset(offset, byteLength, this.length)
+  }
+
+  var val = this[offset + --byteLength]
+  var mul = 1
+  while (byteLength > 0 && (mul *= 0x100)) {
+    val += this[offset + --byteLength] * mul
+  }
+
+  return val
+}
+
+Buffer.prototype.readUInt8 = function readUInt8 (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 1, this.length)
+  return this[offset]
+}
+
+Buffer.prototype.readUInt16LE = function readUInt16LE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 2, this.length)
+  return this[offset] | (this[offset + 1] << 8)
+}
+
+Buffer.prototype.readUInt16BE = function readUInt16BE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 2, this.length)
+  return (this[offset] << 8) | this[offset + 1]
+}
+
+Buffer.prototype.readUInt32LE = function readUInt32LE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
+
+  return ((this[offset]) |
+      (this[offset + 1] << 8) |
+      (this[offset + 2] << 16)) +
+      (this[offset + 3] * 0x1000000)
+}
+
+Buffer.prototype.readUInt32BE = function readUInt32BE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
+
+  return (this[offset] * 0x1000000) +
+    ((this[offset + 1] << 16) |
+    (this[offset + 2] << 8) |
+    this[offset + 3])
+}
+
+Buffer.prototype.readIntLE = function readIntLE (offset, byteLength, noAssert) {
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) checkOffset(offset, byteLength, this.length)
+
+  var val = this[offset]
+  var mul = 1
+  var i = 0
+  while (++i < byteLength && (mul *= 0x100)) {
+    val += this[offset + i] * mul
+  }
+  mul *= 0x80
+
+  if (val >= mul) val -= Math.pow(2, 8 * byteLength)
+
+  return val
+}
+
+Buffer.prototype.readIntBE = function readIntBE (offset, byteLength, noAssert) {
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) checkOffset(offset, byteLength, this.length)
+
+  var i = byteLength
+  var mul = 1
+  var val = this[offset + --i]
+  while (i > 0 && (mul *= 0x100)) {
+    val += this[offset + --i] * mul
+  }
+  mul *= 0x80
+
+  if (val >= mul) val -= Math.pow(2, 8 * byteLength)
+
+  return val
+}
+
+Buffer.prototype.readInt8 = function readInt8 (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 1, this.length)
+  if (!(this[offset] & 0x80)) return (this[offset])
+  return ((0xff - this[offset] + 1) * -1)
+}
+
+Buffer.prototype.readInt16LE = function readInt16LE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 2, this.length)
+  var val = this[offset] | (this[offset + 1] << 8)
+  return (val & 0x8000) ? val | 0xFFFF0000 : val
+}
+
+Buffer.prototype.readInt16BE = function readInt16BE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 2, this.length)
+  var val = this[offset + 1] | (this[offset] << 8)
+  return (val & 0x8000) ? val | 0xFFFF0000 : val
+}
+
+Buffer.prototype.readInt32LE = function readInt32LE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
+
+  return (this[offset]) |
+    (this[offset + 1] << 8) |
+    (this[offset + 2] << 16) |
+    (this[offset + 3] << 24)
+}
+
+Buffer.prototype.readInt32BE = function readInt32BE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
+
+  return (this[offset] << 24) |
+    (this[offset + 1] << 16) |
+    (this[offset + 2] << 8) |
+    (this[offset + 3])
+}
+
+Buffer.prototype.readFloatLE = function readFloatLE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
+  return ieee754.read(this, offset, true, 23, 4)
+}
+
+Buffer.prototype.readFloatBE = function readFloatBE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 4, this.length)
+  return ieee754.read(this, offset, false, 23, 4)
+}
+
+Buffer.prototype.readDoubleLE = function readDoubleLE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 8, this.length)
+  return ieee754.read(this, offset, true, 52, 8)
+}
+
+Buffer.prototype.readDoubleBE = function readDoubleBE (offset, noAssert) {
+  offset = offset >>> 0
+  if (!noAssert) checkOffset(offset, 8, this.length)
+  return ieee754.read(this, offset, false, 52, 8)
+}
+
+function checkInt (buf, value, offset, ext, max, min) {
+  if (!Buffer.isBuffer(buf)) throw new TypeError('"buffer" argument must be a Buffer instance')
+  if (value > max || value < min) throw new RangeError('"value" argument is out of bounds')
+  if (offset + ext > buf.length) throw new RangeError('Index out of range')
+}
+
+Buffer.prototype.writeUIntLE = function writeUIntLE (value, offset, byteLength, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) {
+    var maxBytes = Math.pow(2, 8 * byteLength) - 1
+    checkInt(this, value, offset, byteLength, maxBytes, 0)
+  }
+
+  var mul = 1
+  var i = 0
+  this[offset] = value & 0xFF
+  while (++i < byteLength && (mul *= 0x100)) {
+    this[offset + i] = (value / mul) & 0xFF
+  }
+
+  return offset + byteLength
+}
+
+Buffer.prototype.writeUIntBE = function writeUIntBE (value, offset, byteLength, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  byteLength = byteLength >>> 0
+  if (!noAssert) {
+    var maxBytes = Math.pow(2, 8 * byteLength) - 1
+    checkInt(this, value, offset, byteLength, maxBytes, 0)
+  }
+
+  var i = byteLength - 1
+  var mul = 1
+  this[offset + i] = value & 0xFF
+  while (--i >= 0 && (mul *= 0x100)) {
+    this[offset + i] = (value / mul) & 0xFF
+  }
+
+  return offset + byteLength
+}
+
+Buffer.prototype.writeUInt8 = function writeUInt8 (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 1, 0xff, 0)
+  this[offset] = (value & 0xff)
+  return offset + 1
+}
+
+Buffer.prototype.writeUInt16LE = function writeUInt16LE (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
+  this[offset] = (value & 0xff)
+  this[offset + 1] = (value >>> 8)
+  return offset + 2
+}
+
+Buffer.prototype.writeUInt16BE = function writeUInt16BE (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 2, 0xffff, 0)
+  this[offset] = (value >>> 8)
+  this[offset + 1] = (value & 0xff)
+  return offset + 2
+}
+
+Buffer.prototype.writeUInt32LE = function writeUInt32LE (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
+  this[offset + 3] = (value >>> 24)
+  this[offset + 2] = (value >>> 16)
+  this[offset + 1] = (value >>> 8)
+  this[offset] = (value & 0xff)
+  return offset + 4
+}
+
+Buffer.prototype.writeUInt32BE = function writeUInt32BE (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 4, 0xffffffff, 0)
+  this[offset] = (value >>> 24)
+  this[offset + 1] = (value >>> 16)
+  this[offset + 2] = (value >>> 8)
+  this[offset + 3] = (value & 0xff)
+  return offset + 4
+}
+
+Buffer.prototype.writeIntLE = function writeIntLE (value, offset, byteLength, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) {
+    var limit = Math.pow(2, (8 * byteLength) - 1)
+
+    checkInt(this, value, offset, byteLength, limit - 1, -limit)
+  }
+
+  var i = 0
+  var mul = 1
+  var sub = 0
+  this[offset] = value & 0xFF
+  while (++i < byteLength && (mul *= 0x100)) {
+    if (value < 0 && sub === 0 && this[offset + i - 1] !== 0) {
+      sub = 1
+    }
+    this[offset + i] = ((value / mul) >> 0) - sub & 0xFF
+  }
+
+  return offset + byteLength
+}
+
+Buffer.prototype.writeIntBE = function writeIntBE (value, offset, byteLength, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) {
+    var limit = Math.pow(2, (8 * byteLength) - 1)
+
+    checkInt(this, value, offset, byteLength, limit - 1, -limit)
+  }
+
+  var i = byteLength - 1
+  var mul = 1
+  var sub = 0
+  this[offset + i] = value & 0xFF
+  while (--i >= 0 && (mul *= 0x100)) {
+    if (value < 0 && sub === 0 && this[offset + i + 1] !== 0) {
+      sub = 1
+    }
+    this[offset + i] = ((value / mul) >> 0) - sub & 0xFF
+  }
+
+  return offset + byteLength
+}
+
+Buffer.prototype.writeInt8 = function writeInt8 (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 1, 0x7f, -0x80)
+  if (value < 0) value = 0xff + value + 1
+  this[offset] = (value & 0xff)
+  return offset + 1
+}
+
+Buffer.prototype.writeInt16LE = function writeInt16LE (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
+  this[offset] = (value & 0xff)
+  this[offset + 1] = (value >>> 8)
+  return offset + 2
+}
+
+Buffer.prototype.writeInt16BE = function writeInt16BE (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 2, 0x7fff, -0x8000)
+  this[offset] = (value >>> 8)
+  this[offset + 1] = (value & 0xff)
+  return offset + 2
+}
+
+Buffer.prototype.writeInt32LE = function writeInt32LE (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
+  this[offset] = (value & 0xff)
+  this[offset + 1] = (value >>> 8)
+  this[offset + 2] = (value >>> 16)
+  this[offset + 3] = (value >>> 24)
+  return offset + 4
+}
+
+Buffer.prototype.writeInt32BE = function writeInt32BE (value, offset, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) checkInt(this, value, offset, 4, 0x7fffffff, -0x80000000)
+  if (value < 0) value = 0xffffffff + value + 1
+  this[offset] = (value >>> 24)
+  this[offset + 1] = (value >>> 16)
+  this[offset + 2] = (value >>> 8)
+  this[offset + 3] = (value & 0xff)
+  return offset + 4
+}
+
+function checkIEEE754 (buf, value, offset, ext, max, min) {
+  if (offset + ext > buf.length) throw new RangeError('Index out of range')
+  if (offset < 0) throw new RangeError('Index out of range')
+}
+
+function writeFloat (buf, value, offset, littleEndian, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) {
+    checkIEEE754(buf, value, offset, 4, 3.4028234663852886e+38, -3.4028234663852886e+38)
+  }
+  ieee754.write(buf, value, offset, littleEndian, 23, 4)
+  return offset + 4
+}
+
+Buffer.prototype.writeFloatLE = function writeFloatLE (value, offset, noAssert) {
+  return writeFloat(this, value, offset, true, noAssert)
+}
+
+Buffer.prototype.writeFloatBE = function writeFloatBE (value, offset, noAssert) {
+  return writeFloat(this, value, offset, false, noAssert)
+}
+
+function writeDouble (buf, value, offset, littleEndian, noAssert) {
+  value = +value
+  offset = offset >>> 0
+  if (!noAssert) {
+    checkIEEE754(buf, value, offset, 8, 1.7976931348623157E+308, -1.7976931348623157E+308)
+  }
+  ieee754.write(buf, value, offset, littleEndian, 52, 8)
+  return offset + 8
+}
+
+Buffer.prototype.writeDoubleLE = function writeDoubleLE (value, offset, noAssert) {
+  return writeDouble(this, value, offset, true, noAssert)
+}
+
+Buffer.prototype.writeDoubleBE = function writeDoubleBE (value, offset, noAssert) {
+  return writeDouble(this, value, offset, false, noAssert)
+}
+
+// copy(targetBuffer, targetStart=0, sourceStart=0, sourceEnd=buffer.length)
+Buffer.prototype.copy = function copy (target, targetStart, start, end) {
+  if (!Buffer.isBuffer(target)) throw new TypeError('argument should be a Buffer')
+  if (!start) start = 0
+  if (!end && end !== 0) end = this.length
+  if (targetStart >= target.length) targetStart = target.length
+  if (!targetStart) targetStart = 0
+  if (end > 0 && end < start) end = start
+
+  // Copy 0 bytes; we're done
+  if (end === start) return 0
+  if (target.length === 0 || this.length === 0) return 0
+
+  // Fatal error conditions
+  if (targetStart < 0) {
+    throw new RangeError('targetStart out of bounds')
+  }
+  if (start < 0 || start >= this.length) throw new RangeError('Index out of range')
+  if (end < 0) throw new RangeError('sourceEnd out of bounds')
+
+  // Are we oob?
+  if (end > this.length) end = this.length
+  if (target.length - targetStart < end - start) {
+    end = target.length - targetStart + start
+  }
+
+  var len = end - start
+
+  if (this === target && typeof Uint8Array.prototype.copyWithin === 'function') {
+    // Use built-in when available, missing from IE11
+    this.copyWithin(targetStart, start, end)
+  } else if (this === target && start < targetStart && targetStart < end) {
+    // descending copy from end
+    for (var i = len - 1; i >= 0; --i) {
+      target[i + targetStart] = this[i + start]
+    }
+  } else {
+    Uint8Array.prototype.set.call(
+      target,
+      this.subarray(start, end),
+      targetStart
+    )
+  }
+
+  return len
+}
+
+// Usage:
+//    buffer.fill(number[, offset[, end]])
+//    buffer.fill(buffer[, offset[, end]])
+//    buffer.fill(string[, offset[, end]][, encoding])
+Buffer.prototype.fill = function fill (val, start, end, encoding) {
+  // Handle string cases:
+  if (typeof val === 'string') {
+    if (typeof start === 'string') {
+      encoding = start
+      start = 0
+      end = this.length
+    } else if (typeof end === 'string') {
+      encoding = end
+      end = this.length
+    }
+    if (encoding !== undefined && typeof encoding !== 'string') {
+      throw new TypeError('encoding must be a string')
+    }
+    if (typeof encoding === 'string' && !Buffer.isEncoding(encoding)) {
+      throw new TypeError('Unknown encoding: ' + encoding)
+    }
+    if (val.length === 1) {
+      var code = val.charCodeAt(0)
+      if ((encoding === 'utf8' && code < 128) ||
+          encoding === 'latin1') {
+        // Fast path: If `val` fits into a single byte, use that numeric value.
+        val = code
+      }
+    }
+  } else if (typeof val === 'number') {
+    val = val & 255
+  }
+
+  // Invalid ranges are not set to a default, so can range check early.
+  if (start < 0 || this.length < start || this.length < end) {
+    throw new RangeError('Out of range index')
+  }
+
+  if (end <= start) {
+    return this
+  }
+
+  start = start >>> 0
+  end = end === undefined ? this.length : end >>> 0
+
+  if (!val) val = 0
+
+  var i
+  if (typeof val === 'number') {
+    for (i = start; i < end; ++i) {
+      this[i] = val
+    }
+  } else {
+    var bytes = Buffer.isBuffer(val)
+      ? val
+      : Buffer.from(val, encoding)
+    var len = bytes.length
+    if (len === 0) {
+      throw new TypeError('The value "' + val +
+        '" is invalid for argument "value"')
+    }
+    for (i = 0; i < end - start; ++i) {
+      this[i + start] = bytes[i % len]
+    }
+  }
+
+  return this
+}
+
+// HELPER FUNCTIONS
+// ================
+
+var INVALID_BASE64_RE = /[^+/0-9A-Za-z-_]/g
+
+function base64clean (str) {
+  // Node takes equal signs as end of the Base64 encoding
+  str = str.split('=')[0]
+  // Node strips out invalid characters like \n and \t from the string, base64-js does not
+  str = str.trim().replace(INVALID_BASE64_RE, '')
+  // Node converts strings with length < 2 to ''
+  if (str.length < 2) return ''
+  // Node allows for non-padded base64 strings (missing trailing ===), base64-js does not
+  while (str.length % 4 !== 0) {
+    str = str + '='
+  }
+  return str
+}
+
+function toHex (n) {
+  if (n < 16) return '0' + n.toString(16)
+  return n.toString(16)
+}
+
+function utf8ToBytes (string, units) {
+  units = units || Infinity
+  var codePoint
+  var length = string.length
+  var leadSurrogate = null
+  var bytes = []
+
+  for (var i = 0; i < length; ++i) {
+    codePoint = string.charCodeAt(i)
+
+    // is surrogate component
+    if (codePoint > 0xD7FF && codePoint < 0xE000) {
+      // last char was a lead
+      if (!leadSurrogate) {
+        // no lead yet
+        if (codePoint > 0xDBFF) {
+          // unexpected trail
+          if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+          continue
+        } else if (i + 1 === length) {
+          // unpaired lead
+          if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+          continue
+        }
+
+        // valid lead
+        leadSurrogate = codePoint
+
+        continue
+      }
+
+      // 2 leads in a row
+      if (codePoint < 0xDC00) {
+        if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+        leadSurrogate = codePoint
+        continue
+      }
+
+      // valid surrogate pair
+      codePoint = (leadSurrogate - 0xD800 << 10 | codePoint - 0xDC00) + 0x10000
+    } else if (leadSurrogate) {
+      // valid bmp char, but last char was a lead
+      if ((units -= 3) > -1) bytes.push(0xEF, 0xBF, 0xBD)
+    }
+
+    leadSurrogate = null
+
+    // encode utf8
+    if (codePoint < 0x80) {
+      if ((units -= 1) < 0) break
+      bytes.push(codePoint)
+    } else if (codePoint < 0x800) {
+      if ((units -= 2) < 0) break
+      bytes.push(
+        codePoint >> 0x6 | 0xC0,
+        codePoint & 0x3F | 0x80
+      )
+    } else if (codePoint < 0x10000) {
+      if ((units -= 3) < 0) break
+      bytes.push(
+        codePoint >> 0xC | 0xE0,
+        codePoint >> 0x6 & 0x3F | 0x80,
+        codePoint & 0x3F | 0x80
+      )
+    } else if (codePoint < 0x110000) {
+      if ((units -= 4) < 0) break
+      bytes.push(
+        codePoint >> 0x12 | 0xF0,
+        codePoint >> 0xC & 0x3F | 0x80,
+        codePoint >> 0x6 & 0x3F | 0x80,
+        codePoint & 0x3F | 0x80
+      )
+    } else {
+      throw new Error('Invalid code point')
+    }
+  }
+
+  return bytes
+}
+
+function asciiToBytes (str) {
+  var byteArray = []
+  for (var i = 0; i < str.length; ++i) {
+    // Node's code seems to be doing this and not & 0x7F..
+    byteArray.push(str.charCodeAt(i) & 0xFF)
+  }
+  return byteArray
+}
+
+function utf16leToBytes (str, units) {
+  var c, hi, lo
+  var byteArray = []
+  for (var i = 0; i < str.length; ++i) {
+    if ((units -= 2) < 0) break
+
+    c = str.charCodeAt(i)
+    hi = c >> 8
+    lo = c % 256
+    byteArray.push(lo)
+    byteArray.push(hi)
+  }
+
+  return byteArray
+}
+
+function base64ToBytes (str) {
+  return base64.toByteArray(base64clean(str))
+}
+
+function blitBuffer (src, dst, offset, length) {
+  for (var i = 0; i < length; ++i) {
+    if ((i + offset >= dst.length) || (i >= src.length)) break
+    dst[i + offset] = src[i]
+  }
+  return i
+}
+
+// ArrayBuffer or Uint8Array objects from other contexts (i.e. iframes) do not pass
+// the `instanceof` check but they should be treated as of that type.
+// See: https://github.com/feross/buffer/issues/166
+function isInstance (obj, type) {
+  return obj instanceof type ||
+    (obj != null && obj.constructor != null && obj.constructor.name != null &&
+      obj.constructor.name === type.name)
+}
+function numberIsNaN (obj) {
+  // For IE11 support
+  return obj !== obj // eslint-disable-line no-self-compare
+}
+
+},{"base64-js":11,"ieee754":14}],14:[function(require,module,exports){
+exports.read = function (buffer, offset, isLE, mLen, nBytes) {
+  var e, m
+  var eLen = (nBytes * 8) - mLen - 1
+  var eMax = (1 << eLen) - 1
+  var eBias = eMax >> 1
+  var nBits = -7
+  var i = isLE ? (nBytes - 1) : 0
+  var d = isLE ? -1 : 1
+  var s = buffer[offset + i]
+
+  i += d
+
+  e = s & ((1 << (-nBits)) - 1)
+  s >>= (-nBits)
+  nBits += eLen
+  for (; nBits > 0; e = (e * 256) + buffer[offset + i], i += d, nBits -= 8) {}
+
+  m = e & ((1 << (-nBits)) - 1)
+  e >>= (-nBits)
+  nBits += mLen
+  for (; nBits > 0; m = (m * 256) + buffer[offset + i], i += d, nBits -= 8) {}
+
+  if (e === 0) {
+    e = 1 - eBias
+  } else if (e === eMax) {
+    return m ? NaN : ((s ? -1 : 1) * Infinity)
+  } else {
+    m = m + Math.pow(2, mLen)
+    e = e - eBias
+  }
+  return (s ? -1 : 1) * m * Math.pow(2, e - mLen)
+}
+
+exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
+  var e, m, c
+  var eLen = (nBytes * 8) - mLen - 1
+  var eMax = (1 << eLen) - 1
+  var eBias = eMax >> 1
+  var rt = (mLen === 23 ? Math.pow(2, -24) - Math.pow(2, -77) : 0)
+  var i = isLE ? 0 : (nBytes - 1)
+  var d = isLE ? 1 : -1
+  var s = value < 0 || (value === 0 && 1 / value < 0) ? 1 : 0
+
+  value = Math.abs(value)
+
+  if (isNaN(value) || value === Infinity) {
+    m = isNaN(value) ? 1 : 0
+    e = eMax
+  } else {
+    e = Math.floor(Math.log(value) / Math.LN2)
+    if (value * (c = Math.pow(2, -e)) < 1) {
+      e--
+      c *= 2
+    }
+    if (e + eBias >= 1) {
+      value += rt / c
+    } else {
+      value += rt * Math.pow(2, 1 - eBias)
+    }
+    if (value * c >= 2) {
+      e++
+      c /= 2
+    }
+
+    if (e + eBias >= eMax) {
+      m = 0
+      e = eMax
+    } else if (e + eBias >= 1) {
+      m = ((value * c) - 1) * Math.pow(2, mLen)
+      e = e + eBias
+    } else {
+      m = value * Math.pow(2, eBias - 1) * Math.pow(2, mLen)
+      e = 0
+    }
+  }
+
+  for (; mLen >= 8; buffer[offset + i] = m & 0xff, i += d, m /= 256, mLen -= 8) {}
+
+  e = (e << mLen) | m
+  eLen += mLen
+  for (; eLen > 0; buffer[offset + i] = e & 0xff, i += d, e /= 256, eLen -= 8) {}
+
+  buffer[offset + i - d] |= s * 128
+}
+
+},{}]},{},[10])(10)
+});
