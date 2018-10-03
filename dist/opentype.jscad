@@ -1,4 +1,4 @@
-(function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f()}else if(typeof define==="function"&&define.amd){define([],f)}else{var g;if(typeof window!=="undefined"){g=window}else if(typeof global!=="undefined"){g=global}else if(typeof self!=="undefined"){g=self}else{g=this}g.OpenType = f()}})(function(){var define,module,exports;return (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
+(function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 const _CSGDEBUG = false
 
 /** Number of polygons per 360 degree revolution for 2D objects.
@@ -12859,11 +12859,16 @@ const calcBezRes = (res, p1, p2) => {
   } 
 }
 
-const fPath2cPath = (fp) => {
+const fPath2cPath = (fp, options) => {
   let csgPath = []; // array of csg paths
   let np; // nexPath
   let gotEnd = true;
+  const defaults = {
+          resolution: 12
+    }
 
+  const opt = Object.assign({}, defaults, options);
+  
   for (let i = 0; i < fp.commands.length; i += 1) {
     const cmd = fp.commands[i];
 //    console.log(`${i}) ${JSON.stringify(cmd)}`);
@@ -12911,16 +12916,15 @@ const fPath2cPath = (fp) => {
       // seems to be fixed (by pointsFromArray?)?
 //        if (cmd.x1 == cmd.x2) { console.log("break x1=x2"); break }; // specific for hands?
  //       if (cmd.y1 == cmd.y2) { console.log("break y1=y2"); break }; // specific for hands?
-
         // test if points are not the same?? seems that it can happen!?
         if (cmd.x == cmd.x1 && cmd.y == cmd.y1) {  
           console.log("break =1"); 
-          np = np.appendBezier([[cmd.x2, -cmd.y2],[cmd.x, -cmd.y]], { resolution: 30 }); // default = 32
+          np = np.appendBezier([[cmd.x2, -cmd.y2],[cmd.x, -cmd.y]], { resolution: opt.resolution }); // default = 32
           break 
         };
         if (cmd.x == cmd.x2 && cmd.y == cmd.y2) {
           console.log("break =2"); 
-          np = np.appendBezier([[cmd.x1, -cmd.y1],[cmd.x, -cmd.y]], { resolution: 30 }); // default = 32
+          np = np.appendBezier([[cmd.x1, -cmd.y1],[cmd.x, -cmd.y]], { resolution: opt.resolution }); // default = 32
           //np = np.appendPoint([cmd.x, -cmd.y]);
           break;
         };
@@ -12931,7 +12935,7 @@ const fPath2cPath = (fp) => {
 //        console.log(`nres: ${nres}`);
         //np = np.appendBezier([[cmd.x1, -cmd.y1],[cmd.x2, -cmd.y2],[cmd.x, -cmd.y]], {resolution: 16}); // default = 32
         if(nres !== 0) {
-          np = np.appendBezier([[cmd.x1, -cmd.y1],[cmd.x2, -cmd.y2],[cmd.x, -cmd.y]], { resolution: 30 }); // default = 32
+          np = np.appendBezier([[cmd.x1, -cmd.y1],[cmd.x2, -cmd.y2],[cmd.x, -cmd.y]], { resolution: opt.resolution }); // default = 32
         } else {
           console.log("poinnt...bezzz");
           //np.appendPoint([cmd.x, -cmd.y]);
@@ -12942,22 +12946,21 @@ const fPath2cPath = (fp) => {
 //        nres = calcBezRes(32, { x: prevPoint.x, y: prevPoint.y }, { x: cmd.x, y: cmd.y }); //swap args?
 //        console.log(`nres: ${nres}`);
         //np = np.appendBezier([[cmd.x1, -cmd.y1],[cmd.x, -cmd.y]], {resolution: 16});
-        if(nres !== 0) {
-          np = np.appendBezier([[cmd.x1, -cmd.y1],[cmd.x, -cmd.y]], { resolution: 30 });
-        } else {
-          console.log("poinnt...bezzz");
-          np.appendPoint([cmd.x, -cmd.y]);
-        }
+        //if(nres !== 0) {
+          np = np.appendBezier([[cmd.x1, -cmd.y1],[cmd.x, -cmd.y]], { resolution: opt.resolution });
+       // } else {
+       //   console.log("poinnt...bezzz");
+       //   np.appendPoint([cmd.x, -cmd.y]);
+       // }
         break;
     }
   }
   return csgPath;
 }
 
-const rawCagsFromPath = (charPath) => {
-  console.log("rawCagsFromPath");
+const rawCagsFromPath = (charPath, options) => {
   // convert font paths to CAG paths
-  const cp = fPath2cPath(charPath);
+  const cp = fPath2cPath(charPath, options);
 //      console.log("cp:");
 //     console.log(cp);
 
@@ -13001,8 +13004,8 @@ const cagsFromString = (font, str, size, options) => { // TODO add other params
   for (fp of fpa) { 
     
     // convert font paths to CAG paths
-    const cp = fPath2cPath(fp);
-    const cags = rawCagsFromPath(fp);
+    //const cp = fPath2cPath(fp, options);
+    const cags = rawCagsFromPath(fp, options);
     if (cags) {
   //  console.log(cags);
       const tree = makeCagTree(cags);
@@ -13147,7 +13150,7 @@ const cagFromCagTree = cagTree => {
 // TODO "stack" it? meaning use cagTreeFromGlyph
 const cagFromGlyph = (font, glyphIndex, size, options) => {
   const gp = font.glyphs.get(glyphIndex).getPath(0,0,size,options);
-  const cags = rawCagsFromPath(gp);
+  const cags = rawCagsFromPath(gp, options);
 //  console.log("rawCags");
 //  console.log(cags);
   const tree = makeCagTree(cags);
@@ -13160,7 +13163,7 @@ const cagFromGlyph = (font, glyphIndex, size, options) => {
 // can be used to create outline
 const cagTreeFromChar = (font, char, size, options) => {
   const cp = font.charToGlyph(char).getPath(0,0,size,options);
-  const cags = rawCagsFromPath(gp);
+  const cags = rawCagsFromPath(gp, options);
   const tree = makeCagTree(cags);
   return tree;
 }
@@ -13168,7 +13171,7 @@ const cagTreeFromChar = (font, char, size, options) => {
 const cagTreeFromGlyph = (font, glyphIndex, size, options) => {
   const gp = font.glyphs.get(glyphIndex).getPath(0,0,size,options);
   console.log(gp);
-  const cags = rawCagsFromPath(gp);
+  const cags = rawCagsFromPath(gp, options);
   console.log(cags);
   const tree = makeCagTree(cags);
   return tree;
@@ -13187,8 +13190,8 @@ const cagTreeFromString = (font, str, size, options) => {
   for (fp of fpa) { 
     
     // convert font paths to CAG paths
-    const cp = fPath2cPath(fp);
-    const cags = rawCagsFromPath(fp);
+    //const cp = fPath2cPath(fp, options);
+    const cags = rawCagsFromPath(fp, options);
     if (cags) {
   //  console.log(cags);
       const tree = makeCagTree(cags);
@@ -15274,5 +15277,4 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
   buffer[offset + i - d] |= s * 128
 }
 
-},{}]},{},[6])(6)
-});
+},{}]},{},[6]);
